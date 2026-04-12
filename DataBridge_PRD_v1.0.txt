@@ -1,0 +1,426 @@
+DataBridge
+Large-Scale Data Import & Transform Tool
+Product Requirements Document  •  v1.0  •  April 2026
+Product
+DataBridge
+Version
+1.0 — Phase 1 MVP
+Status
+Ready for Development
+Owner
+Internal Team
+Last Updated
+April 2026
+
+1. Executive Summary
+DataBridge is an internal data import and transformation tool designed to eliminate the pain of importing large CSV, Excel, and JSON files into NocoDB and other destinations. It provides a browser-based UI for uploading files of any size, mapping columns visually, transforming data, and pushing it asynchronously to target systems in parallel batches.
+
+The immediate problem DataBridge solves: NocoDB's built-in CSV import is hardcoded to a 25MB frontend limit. There is no environment variable to override this — it is a frontend restriction in QuickImport.vue. For larger files, the only reliable path is the NocoDB REST API with batch inserts. DataBridge wraps this into a clean, repeatable workflow.
+
+DataBridge is built for internal use only. No user authentication in Phase 1. All NocoDB connection settings (URL, API token, Base ID, Table ID) are configurable in a settings page and persisted in the backend database.
+
+2. Problem Statement
+Current Pain Points
+	•	NocoDB UI rejects CSV/Excel files larger than 25MB — hardcoded frontend limit, cannot be changed via env vars
+	•	Manual workaround requires: convert CSV → JSON → batch POST via Python script → monitor in terminal
+	•	No UI for column mapping — field names in CSV must exactly match NocoDB column names or data is silently dropped
+	•	No progress visibility — terminal output only, no way to resume failed imports
+	•	No column management — adding 30+ columns to a NocoDB table requires clicking through UI one by one
+	•	Importing large Excel files requires manual conversion to CSV first
+	•	No audit trail — no record of what was imported, when, by whom, or how many rows succeeded/failed
+Known API Constraints (Discovered During Development)
+The following constraints were discovered while building the initial Python import script and must be respected in DataBridge:
+	•	NocoDB v1 bulk insert endpoint: POST /api/v1/db/data/bulk/noco/{baseId}/{tableId}
+	•	Hard limit of 100 records per request — enforced server-side, returns ERR_MAX_PAYLOAD_LIMIT_EXCEEDED
+	•	Requires xc-token header (not xc-auth) for API token authentication
+	•	NocoDB v2 data endpoints (/api/v2/tables/{id}/records) do NOT work on self-hosted 0.301.x — use v1
+	•	Meta API for creating fields: POST /api/v1/meta/tables/{tableId}/fields
+	•	NocoDB rate limit: 5 requests per second per user — exceeding returns HTTP 429, must wait 30 seconds
+	•	If CSV columns don't exist in NocoDB table, data is silently dropped — columns must exist before insert
+	•	External Postgres data sources require Data Source ID for some API operations
+
+3. Goals & Non-Goals
+Goals
+	•	Support file uploads of any size (500MB+) via chunked upload — no browser size limits
+	•	Visual column mapping UI — drag CSV headers to NocoDB fields, rename, skip, or transform
+	•	Async batch processing — imports run in background, user sees live progress
+	•	Parallel workers — 5 concurrent batch requests, respecting NocoDB rate limits
+	•	Auto-create missing columns in NocoDB before inserting data
+	•	Full import job history with row counts, errors, and timestamps
+	•	Settings page for all NocoDB connection details — no hardcoded values
+	•	File format conversion — CSV ↔ JSON ↔ Excel
+	•	Docker Compose deployment — runs on any VPS via Coolify
+Non-Goals (Phase 1)
+	•	No user authentication or multi-user access control
+	•	No Google Sheets export (Phase 3)
+	•	No scheduled/recurring imports (Phase 3)
+	•	No mobile UI — desktop browser only
+
+4. System Architecture
+4.1 High-Level Architecture
+DataBridge is split into two independently deployable services:
+
+Service
+Technology
+Hosting
+Frontend
+Next.js (TypeScript)
+Vercel (free tier)
+Backend API
+FastAPI (Python)
+VPS via Coolify
+Task Queue
+Celery + Redis
+VPS via Coolify
+Database
+PostgreSQL
+VPS (existing instance)
+File Storage
+Local VPS disk / MinIO
+VPS via Coolify
+4.2 Request Flow
+The following describes the complete flow from file upload to NocoDB import:
+
+	•	User selects file in Next.js UI → file is uploaded in chunks to FastAPI /upload endpoint
+	•	FastAPI assembles chunks, saves to /uploads directory, parses headers and first 20 rows
+	•	Frontend displays column preview + mapping UI — user maps CSV headers to NocoDB field names
+	•	User clicks Import → FastAPI creates a Job record in PostgreSQL and pushes task to Celery queue
+	•	Celery worker picks up job, reads file in chunks of 1000 rows using pandas chunksize parameter
+	•	For each chunk: split into batches of 100 → send 5 batches in parallel to NocoDB v1 bulk API
+	•	Progress updates written to Redis → frontend polls /jobs/{id}/progress every 2 seconds
+	•	On completion: job record updated with total rows, error count, duration, timestamp
+	•	Failed rows logged individually with row number and error message for debugging
+4.3 NocoDB Integration Details
+Based on confirmed working API calls from the development of the initial import script:
+
+	•	Bulk insert: POST /api/v1/db/data/bulk/noco/{baseId}/{tableId}
+	•	Payload: JSON array of objects, max 100 items per request
+	•	Authentication: xc-token: {apiToken} header
+	•	Rate limit: 5 concurrent requests max — Celery worker uses semaphore to enforce this
+	•	Column creation: POST /api/v1/meta/tables/{tableId}/fields with {title, uidt} body
+	•	Field types: SingleLineText for most columns, LongText for description/keywords/technologies
+	•	Pre-import check: GET /api/v1/db/data/noco/{baseId}/{tableId}?limit=1 to verify table exists and get current columns
+
+5. Technology Stack
+5.1 Backend (FastAPI)
+Package / Tool
+Purpose
+FastAPI
+Main API framework — async, fast, auto-generates OpenAPI docs
+Celery
+Async task queue for background import jobs
+Redis
+Celery broker + job progress storage
+PostgreSQL
+Job history, settings, column mapping templates
+SQLAlchemy + Alembic
+ORM and database migrations
+pandas
+CSV/Excel parsing with chunksize for memory efficiency
+openpyxl
+Excel .xlsx read/write support
+python-multipart
+Chunked file upload handling
+httpx
+Async HTTP client for parallel NocoDB API calls
+pydantic-settings
+Environment variable management with .env support
+uvicorn
+ASGI server for running FastAPI
+5.2 Frontend (Next.js)
+Package / Tool
+Purpose
+Next.js 14 (TypeScript)
+React framework, App Router, deployed on Vercel
+Tailwind CSS
+Utility-first styling
+shadcn/ui
+UI component library (built on Radix UI)
+react-dropzone
+Drag-and-drop file upload with chunked upload support
+@tanstack/react-query
+API state management, polling for job progress
+react-beautiful-dnd
+Drag-and-drop column mapping UI
+axios
+HTTP client with upload progress tracking
+zustand
+Lightweight client state for mapping config
+5.3 Infrastructure & Deployment
+Tool
+Purpose
+Docker Compose
+Orchestrates all backend services
+Coolify
+Manages deployment on VPS, env vars, reverse proxy
+Traefik
+Reverse proxy (via Coolify) — handles HTTPS, routing
+Vercel
+Free frontend hosting for Next.js
+MinIO (optional)
+S3-compatible file storage if local disk is insufficient
+
+6. Phase 1 — NocoDB Import (MVP)
+6.1 Features
+File Upload
+	•	Drag-and-drop or click-to-browse file picker
+	•	Supported formats: .csv, .xlsx, .xls, .json
+	•	No file size limit — chunked upload (5MB chunks) handles 500MB+ files
+	•	Upload progress bar with speed indicator (MB/s)
+	•	File stored temporarily on server — cleaned up after 24 hours
+Column Preview & Mapping
+	•	After upload: display first 20 rows in a scrollable data table
+	•	Auto-detect column data types (text, number, date, boolean, email, URL)
+	•	Map each CSV column to a NocoDB field name — default to same name
+	•	Option to skip/exclude columns from import
+	•	Validation: warn if mapped field doesn't exist in target NocoDB table
+	•	Option to auto-create missing columns in NocoDB before import begins
+Import Configuration
+	•	Select target from saved NocoDB table presets (configured in Settings)
+	•	Or manually enter Base ID + Table ID for one-off imports
+	•	Duplicate handling: insert all (default), skip duplicates, or upsert
+	•	Batch size: fixed at 100 (NocoDB API hard limit)
+	•	Worker concurrency: default 5 parallel workers
+Async Import with Live Progress
+	•	Import runs as background Celery task — UI never blocks
+	•	Progress bar: X of Y rows imported (updates every 2 seconds via polling)
+	•	Live stats: rows inserted, rows failed, current batch, elapsed time, estimated time remaining
+	•	Import can be cancelled mid-way
+	•	On failure: shows which batch failed and why — option to retry from last successful batch
+Import History
+	•	Every import logged with: filename, table, rows total, rows success, rows failed, duration, timestamp
+	•	Click any import to see detailed error log (which rows failed and the error message)
+	•	Download error log as CSV
+	•	Re-run any previous import with same settings
+Settings Page
+	•	NocoDB Base URL
+	•	API Token (masked, stored encrypted in PostgreSQL)
+	•	Saved table presets: friendly name + Base ID + Table ID pairs
+	•	Add/edit/delete presets
+	•	Test connection button — verifies token and lists available tables
+	•	Default worker concurrency setting
+6.2 API Endpoints (Backend)
+Endpoint
+Method
+Description
+POST /api/upload/chunk
+POST
+Receive a file chunk — assembles full file on completion
+GET /api/upload/{id}/preview
+GET
+Return headers + first 20 rows of uploaded file
+POST /api/jobs
+POST
+Create import job — pushes to Celery queue
+GET /api/jobs
+GET
+List all import jobs with status
+GET /api/jobs/{id}
+GET
+Get single job details + error log
+GET /api/jobs/{id}/progress
+GET
+Live progress — polled by frontend every 2s
+DELETE /api/jobs/{id}
+DELETE
+Cancel running job
+GET /api/settings
+GET
+Get all settings and table presets
+PUT /api/settings
+PUT
+Save settings
+POST /api/settings/test
+POST
+Test NocoDB connection and return table list
+GET /api/nocodb/tables/{baseId}
+GET
+Proxy — list tables in a NocoDB base
+GET /api/nocodb/fields/{tableId}
+GET
+Proxy — list fields in a NocoDB table
+POST /api/convert
+POST
+Convert file format (CSV↔JSON↔Excel)
+6.3 Data Models
+ImportJob
+	•	id (uuid), status (pending/running/complete/failed/cancelled)
+	•	filename, file_path, file_size, file_format
+	•	nocodb_base_id, nocodb_table_id, nocodb_url
+	•	column_mapping (JSON), options (JSON)
+	•	total_rows, inserted_rows, failed_rows
+	•	started_at, completed_at, created_at
+	•	error_summary (text)
+ImportError
+	•	id, job_id (FK), row_number, row_data (JSON), error_message, created_at
+Settings
+	•	nocodb_url, nocodb_api_token (encrypted), default_concurrency
+	•	table_presets (JSON array of {name, base_id, table_id})
+
+7. Phase 2 — Advanced Column Management
+Phase 2 focuses on giving users full control over data before it reaches the destination. No timelines defined — built after Phase 1 is stable.
+
+Column Transforms
+	•	Rename columns — change header names before import
+	•	Remove/exclude columns — checkbox to skip unwanted columns
+	•	Change data type per column — text, number, date, boolean, email, URL
+	•	Find & replace — replace values across an entire column
+	•	Split column — e.g. 'Full Name' → 'First Name' + 'Last Name' using delimiter
+	•	Merge columns — combine two columns into one with a separator
+	•	Trim whitespace — strip leading/trailing spaces from all values
+	•	Fill empty cells — replace blank values with a default
+Row Filtering
+	•	Filter rows before import — e.g. only import where country = India
+	•	Multiple filter conditions with AND/OR logic
+	•	Preview filtered row count before importing
+Mapping Templates
+	•	Save a column mapping configuration as a named template
+	•	On next upload of same file format, auto-apply matching template
+	•	Edit and delete saved templates
+Bulk Column Creation
+	•	On mapping screen: show which columns exist in NocoDB vs which are new
+	•	One-click create all missing columns in NocoDB before import
+	•	Choose field type for each new column before creation
+
+8. Phase 3 — Multi-Destination & Automation
+Phase 3 expands DataBridge beyond NocoDB to become a general-purpose data pipeline tool.
+
+Additional Export Destinations
+	•	Export to Excel (.xlsx) — download transformed file
+	•	Export to JSON — with configurable structure (array, nested, etc.)
+	•	Export to CSV — with custom delimiter and encoding
+	•	Export to Google Sheets — via Google Sheets API v4
+	•	Export to another NocoDB table — cross-base or cross-instance
+Format Conversion
+	•	CSV → JSON, JSON → CSV, Excel → CSV, CSV → Excel
+	•	Large file conversion handled async — same job queue as imports
+	•	Download converted file directly from job history
+Scheduled Imports
+	•	Configure recurring imports — hourly, daily, weekly
+	•	Source: URL (public CSV endpoint), SFTP, or S3 bucket
+	•	Notifications on completion or failure (email or webhook)
+Webhooks
+	•	Post-import webhook — send job summary to a URL on completion
+	•	Useful for triggering downstream processes in n8n, Make, or Zapier
+
+9. Docker Compose Configuration
+All backend services run as a single Docker Compose stack, deployed via Coolify. The frontend is separately deployed on Vercel.
+
+Services
+	•	api — FastAPI backend, port 8000
+	•	worker — Celery worker (same image as api, different command)
+	•	redis — Redis 7 alpine, used as Celery broker and progress store
+	•	db — PostgreSQL 15, used for job history and settings (can reuse existing Postgres instance)
+	•	minio (optional) — S3-compatible file storage if local disk is not preferred
+
+Environment Variables
+Variable
+Description
+DATABASE_URL
+PostgreSQL connection string
+REDIS_URL
+Redis connection string for Celery
+UPLOAD_DIR
+Local path for temporary file storage
+MAX_UPLOAD_SIZE_MB
+Max allowed upload size in MB (default 500)
+CELERY_CONCURRENCY
+Number of Celery worker processes
+NOCODB_DEFAULT_URL
+Default NocoDB instance URL (overridable in UI)
+ENCRYPTION_KEY
+Key for encrypting stored API tokens
+CORS_ORIGINS
+Comma-separated allowed frontend origins
+ENVIRONMENT
+development / production
+Coolify Deployment Notes
+	•	Deploy as Docker Compose service in Coolify
+	•	Set all env vars in Coolify's environment variables tab
+	•	Traefik handles HTTPS automatically via Coolify
+	•	Set NC_REQUEST_BODY_SIZE=524288000 and NC_ATTACHMENT_FIELD_SIZE=524288000 on NocoDB service for 500MB support
+	•	Frontend deployed separately on Vercel — set NEXT_PUBLIC_API_URL to your backend domain
+
+10. Project Structure
+Backend (Python / FastAPI)
+databridge-backend/
+├── app/
+│   ├── main.py              # FastAPI app, CORS, routers
+│   ├── config.py            # pydantic-settings config
+│   ├── database.py          # SQLAlchemy engine + session
+│   ├── models/
+│   │   ├── job.py           # ImportJob, ImportError models
+│   │   └── settings.py      # Settings model
+│   ├── routers/
+│   │   ├── upload.py        # Chunked file upload endpoints
+│   │   ├── jobs.py          # Job CRUD + progress
+│   │   ├── settings.py      # Settings CRUD + test connection
+│   │   ├── nocodb.py        # NocoDB proxy endpoints
+│   │   └── convert.py       # File format conversion
+│   ├── workers/
+│   │   ├── celery_app.py    # Celery config + Redis broker
+│   │   └── import_task.py   # Core import logic
+│   ├── services/
+│   │   ├── nocodb.py        # NocoDB API client (httpx async)
+│   │   ├── parser.py        # CSV/Excel/JSON parsing (pandas)
+│   │   └── converter.py     # Format conversion logic
+│   └── schemas/
+│       ├── job.py           # Pydantic request/response schemas
+│       └── settings.py
+├── alembic/                 # Database migrations
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── .env.example
+Frontend (Next.js / TypeScript)
+databridge-frontend/
+├── app/
+│   ├── page.tsx             # Upload + import flow (home)
+│   ├── jobs/
+│   │   └── page.tsx         # Import history
+│   ├── jobs/[id]/
+│   │   └── page.tsx         # Single job detail + errors
+│   └── settings/
+│       └── page.tsx         # NocoDB connection settings
+├── components/
+│   ├── FileUpload.tsx        # Drag-drop chunked uploader
+│   ├── DataPreview.tsx       # First 20 rows preview table
+│   ├── ColumnMapper.tsx      # Drag-drop column mapping UI
+│   ├── ImportProgress.tsx    # Live progress bar + stats
+│   ├── JobHistory.tsx        # Table of past imports
+│   └── SettingsForm.tsx      # NocoDB settings form
+├── lib/
+│   ├── api.ts               # Axios API client
+│   └── types.ts             # TypeScript types
+└── .env.local.example
+
+11. Key Implementation Notes
+Chunked File Upload
+Use multipart chunked upload — split file into 5MB chunks on the frontend, POST each chunk with chunk index and total chunks. FastAPI reassembles on disk. This supports files of any size without browser or Nginx timeouts.
+Pandas Chunked Reading
+Never load the full file into memory. Use pandas read_csv(file, chunksize=1000) so each Celery task only holds 1000 rows in memory at a time. For Excel files use openpyxl engine with same approach.
+Parallel NocoDB Requests
+Use Python asyncio with httpx.AsyncClient and a semaphore of 5 to send 5 batches concurrently. This maxes out NocoDB's 5 req/sec rate limit without exceeding it. Each batch is 100 rows — 5 parallel batches = 500 rows per second theoretical max.
+Progress Tracking
+Celery task writes progress to Redis as a simple key-value: job:{id}:progress = {inserted, failed, total}. Frontend polls GET /api/jobs/{id}/progress every 2 seconds using react-query. No WebSockets needed for Phase 1 — polling is simpler and reliable enough.
+Column Auto-Creation
+Before starting import, DataBridge fetches existing NocoDB fields for the target table. For any CSV column not found in NocoDB, it calls the meta fields API to create it as SingleLineText (or LongText for known long columns like description, keywords, technologies). This prevents silent data loss.
+API Token Security
+NocoDB API tokens are stored in PostgreSQL encrypted using Fernet symmetric encryption (cryptography library). The encryption key is set via ENCRYPTION_KEY env var. Tokens are never returned in plaintext via API — only masked (last 4 chars visible).
+
+12. Recommended Build Order
+	•	Backend: FastAPI project scaffold + Docker Compose setup
+	•	Backend: PostgreSQL models + Alembic migrations
+	•	Backend: Chunked file upload endpoint + pandas parser
+	•	Backend: NocoDB API client service (httpx, parallel batches, rate limiting)
+	•	Backend: Celery task for async import + Redis progress tracking
+	•	Backend: Settings API + NocoDB proxy endpoints
+	•	Frontend: Next.js setup + shadcn/ui + Tailwind
+	•	Frontend: File upload page with drag-drop + chunked uploader
+	•	Frontend: Column mapping UI with data preview table
+	•	Frontend: Import progress page with live polling
+	•	Frontend: Job history page + error log download
+	•	Frontend: Settings page with connection tester
+	•	Deploy: Backend on VPS via Coolify, Frontend on Vercel
+
+DataBridge PRD v1.0  •  Internal Use Only  •  Built with context from live NocoDB debugging session

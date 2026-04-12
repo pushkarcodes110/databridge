@@ -1,0 +1,60 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pushkar
+      POSTGRES_DB: databridge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:pushkar@db:5432/databridge
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+      - UPLOAD_DIR=/app/uploads
+      - ENCRYPTION_KEY=supersecretkey-change-me-in-production=
+      - CELERY_CONCURRENCY=5
+      - CORS_ORIGINS=http://localhost:3000
+      - MAX_UPLOAD_SIZE_MB=500
+    depends_on:
+      - db
+      - redis
+
+  worker:
+    build: .
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=5
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://user:pushkar@db:5432/databridge
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+      - UPLOAD_DIR=/app/uploads
+      - ENCRYPTION_KEY=supersecretkey-change-me-in-production=
+      - CELERY_CONCURRENCY=5
+    depends_on:
+      - db
+      - redis
+
+volumes:
+  postgres_data:
+  redis_data:
