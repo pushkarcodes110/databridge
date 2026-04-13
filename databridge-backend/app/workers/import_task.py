@@ -10,12 +10,18 @@ from app.models.job import ImportJob, ImportError
 from app.models.settings import Settings
 from app.services.nocodb import NocoDBClient
 import redis
+import importlib
+import app.services.nocodb as nocodb_service
 
 # Use direct import for settings if needed, but we init Redis here
 from app.config import settings
 redis_client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
 
 async def _process_import(job_id: str):
+    # Hot-reload the service to pick up 404 fallback fixes without worker restart
+    importlib.reload(nocodb_service)
+    from app.services.nocodb import NocoDBClient
+    
     db: Session = SessionLocal()
     job: ImportJob = db.query(ImportJob).filter(ImportJob.id == job_id).first()
     if not job:
@@ -46,7 +52,7 @@ async def _process_import(job_id: str):
             raise Exception("Target NocoDB table does not exist or is inaccessible.")
 
         # Check fields and create missing ones
-        target_fields = await client.get_table_fields(job.nocodb_table_id)
+        target_fields = await client.get_table_fields(job.nocodb_table_id, base_id=job.nocodb_base_id)
         existing_field_names = [f["title"] for f in target_fields]
         
         # We need to map columns. For MVP we assume mapping handles existing vs non-existing
