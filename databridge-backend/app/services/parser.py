@@ -1,4 +1,5 @@
 import os
+import csv
 import pandas as pd
 from typing import List, Dict, Any
 
@@ -41,11 +42,12 @@ def get_file_preview(file_id: str, filename: str, rows: int = 20) -> Dict[str, A
     try:
         if ext == ".csv":
             seen = set()
-            with open(file_path, 'rb') as f:
-                header = f.readline()
-                for line in f:
+            with open(file_path, 'r', newline='', encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                next(reader, None)
+                for row in reader:
                     total_rows += 1
-                    seen.add(hash(line))
+                    seen.add(tuple(row))
             unique_rows = len(seen)
             
         elif ext in [".xlsx", ".xls"]:

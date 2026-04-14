@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { cancelJob, getJob, getJobs } from "@/lib/api";
-import { AlertCircle, CheckCircle2, Clock3, Loader2, Square } from "lucide-react";
+import { cancelJob, getJob, getJobs, resumeJob } from "@/lib/api";
+import { AlertCircle, CheckCircle2, Clock3, Loader2, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 type JobSummary = {
@@ -16,6 +16,7 @@ type JobSummary = {
   progress_percent: number;
   queue_position: number | null;
   can_cancel: boolean;
+  can_resume: boolean;
   created_at: string | null;
   started_at: string | null;
   completed_at: string | null;
@@ -55,6 +56,7 @@ export default function JobsPage() {
   const [selectedJob, setSelectedJob] = useState<JobDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
 
   const activeJobIds = useMemo(
     () => jobs.filter((job) => job.status === "pending" || job.status === "running").map((job) => job.id),
@@ -112,6 +114,19 @@ export default function JobsPage() {
       setJobs(latestJobs);
     } finally {
       setIsCancelling(false);
+    }
+  };
+
+  const handleResume = async () => {
+    if (!selectedJob) return;
+    try {
+      setIsResuming(true);
+      const data = await resumeJob(selectedJob.id);
+      setSelectedJob((current) => (current ? { ...current, ...data } : current));
+      const latestJobs = await getJobs();
+      setJobs(latestJobs);
+    } finally {
+      setIsResuming(false);
     }
   };
 
@@ -193,12 +208,20 @@ export default function JobsPage() {
                   </p>
                 </div>
 
-                {selectedJob.can_cancel ? (
-                  <Button variant="destructive" onClick={handleCancel} disabled={isCancelling}>
-                    <Square className="mr-2 h-4 w-4" />
-                    {isCancelling ? "Stopping..." : "Stop Job"}
-                  </Button>
-                ) : null}
+                <div className="flex flex-wrap gap-3">
+                  {selectedJob.can_resume ? (
+                    <Button onClick={handleResume} disabled={isResuming}>
+                      <RotateCcw className="mr-2 h-4 w-4" />
+                      {isResuming ? "Resuming..." : "Resume Job"}
+                    </Button>
+                  ) : null}
+                  {selectedJob.can_cancel ? (
+                    <Button variant="destructive" onClick={handleCancel} disabled={isCancelling}>
+                      <Square className="mr-2 h-4 w-4" />
+                      {isCancelling ? "Stopping..." : "Stop Job"}
+                    </Button>
+                  ) : null}
+                </div>
               </div>
 
               <div>

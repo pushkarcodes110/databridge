@@ -78,6 +78,15 @@ def _refresh_job(db: Session, job: ImportJob) -> ImportJob:
     db.refresh(job)
     return job
 
+
+def _get_resume_offset(job: ImportJob) -> int:
+    options = job.options or {}
+    if not options.get("resume"):
+        return 0
+    if options.get("resume_from_row") is not None:
+        return max(int(options.get("resume_from_row") or 0), 0)
+    return max((job.inserted_rows or 0) + (job.failed_rows or 0), 0)
+
 async def _process_import(job_id: str):
     # Hot-reload the service to pick up 404 fallback fixes without worker restart
     importlib.reload(nocodb_service)
@@ -89,12 +98,14 @@ async def _process_import(job_id: str):
         db.close()
         return
 
+    resume_offset = _get_resume_offset(job)
     job.status = "running"
-    job.started_at = datetime.utcnow()
+    job.started_at = job.started_at or datetime.utcnow()
     job.completed_at = None
     job.error_summary = None
-    job.inserted_rows = 0
-    job.failed_rows = 0
+    if resume_offset == 0:
+        job.inserted_rows = 0
+        job.failed_rows = 0
     db.commit()
 
     # Get settings for credentials
@@ -113,7 +124,7 @@ async def _process_import(job_id: str):
     )
 
     try:
-        _set_progress(job.id, 0, 0, job.total_rows or job.file_size or 0)
+        _set_progress(job.id, job.inserted_rows or 0, job.failed_rows or 0, job.total_rows or job.file_size or 0)
 
         if not await client.check_table_exists(job.nocodb_base_id, job.nocodb_table_id):
             raise Exception("Target NocoDB table does not exist or is inaccessible.")
@@ -135,9 +146,10 @@ async def _process_import(job_id: str):
         ext = os.path.splitext(file_path)[1].lower()
         
         chunksize = 1000
-        inserted_rows = 0
-        failed_rows = 0
+        inserted_rows = job.inserted_rows or 0
+        failed_rows = job.failed_rows or 0
         total_rows = job.total_rows or job.file_size or 0
+        actual_rows_seen = 0
         
         if ext == ".csv":
             reader = pd.read_csv(file_path, chunksize=chunksize)
@@ -156,6 +168,14 @@ async def _process_import(job_id: str):
             job = _refresh_job(db, job)
             if job.status == "cancelled":
                 break
+
+            actual_rows_seen += len(df_chunk)
+            chunk_start = chunk_idx * chunksize
+            chunk_end = chunk_start + len(df_chunk)
+            if resume_offset >= chunk_end:
+                continue
+            if resume_offset > chunk_start:
+                df_chunk = df_chunk.iloc[resume_offset - chunk_start:]
 
             df_chunk = df_chunk.fillna("")
             records = df_chunk.to_dict(orient="records")
@@ -221,8 +241,21 @@ async def _process_import(job_id: str):
             if job.status == "cancelled":
                 break
 
+        if job.status != "cancelled" and actual_rows_seen and total_rows != actual_rows_seen:
+            total_rows = actual_rows_seen
+            job.total_rows = actual_rows_seen
+            db.commit()
+            _set_progress(job.id, inserted_rows, failed_rows, total_rows)
+
         if job.status == "cancelled":
             job.error_summary = "Import cancelled by user."
+        elif total_rows and inserted_rows + failed_rows < total_rows:
+            job.status = "failed"
+            job.error_summary = (
+                f"Import stopped before all rows were processed: "
+                f"{inserted_rows + failed_rows} of {total_rows} rows handled. "
+                "Use Resume to continue from the last saved progress."
+            )
         else:
             job.status = "complete" if failed_rows == 0 else "failed"
         

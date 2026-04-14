@@ -31,3 +31,4 @@ export const getJobs = () => api.get("/jobs/").then((res) => res.data);
 export const getJob = (jobId: string) => api.get(`/jobs/${jobId}`).then((res) => res.data);
 export const getJobProgress = (jobId: string) => api.get(`/jobs/${jobId}/progress`).then((res) => res.data);
 export const cancelJob = (jobId: string) => api.post(`/jobs/${jobId}/cancel`).then((res) => res.data);
+export const resumeJob = (jobId: string) => api.post(`/jobs/${jobId}/resume`).then((res) => res.data);
