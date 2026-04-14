@@ -36,9 +36,11 @@ export type TransformFilters = {
 
 type TransformStore = {
   uploadId: string;
+  totalRows: number;
   mapping: TransformMapping[];
   filters: TransformFilters;
   setUploadId: (uploadId: string) => void;
+  setTotalRows: (totalRows: number) => void;
   setMapping: (mapping: TransformMapping[]) => void;
   setFilterEnabled: (filter: keyof TransformFilters, enabled: boolean) => void;
   setEmailConfig: (config: Partial<EmailFilterConfig>) => void;
@@ -85,9 +87,11 @@ function cloneDefaultFilters() {
 
 export const useTransformStore = create<TransformStore>((set) => ({
   uploadId: "",
+  totalRows: 0,
   mapping: [],
   filters: cloneDefaultFilters(),
   setUploadId: (uploadId) => set({ uploadId }),
+  setTotalRows: (totalRows) => set({ totalRows }),
   setMapping: (mapping) => set({ mapping }),
   setFilterEnabled: (filter, enabled) => set((state) => ({
     filters: {
@@ -127,6 +131,7 @@ export const useTransformStore = create<TransformStore>((set) => ({
   })),
   resetTransform: () => set({
     uploadId: "",
+    totalRows: 0,
     mapping: [],
     filters: cloneDefaultFilters(),
   }),

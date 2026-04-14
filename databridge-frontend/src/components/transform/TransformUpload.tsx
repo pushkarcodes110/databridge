@@ -20,7 +20,7 @@ import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { FiltersSection } from "@/components/transform/FiltersSection";
+import FilterPanel from "@/components/transform/FilterPanel";
 import { cn } from "@/lib/utils";
 import { TransformMapping, useTransformStore } from "@/lib/transform-store";
 
@@ -192,7 +192,13 @@ export function TransformUpload() {
   const [newOutputColumn, setNewOutputColumn] = useState("");
   const [activeSourceColumn, setActiveSourceColumn] = useState<string | null>(null);
   const filtersRef = useRef<HTMLDivElement>(null);
+  
+  const uploadId = useTransformStore((state) => state.uploadId);
+  const storeMapping = useTransformStore((state) => state.mapping);
+  const totalRows = useTransformStore((state) => state.totalRows);
+  
   const setUploadId = useTransformStore((state) => state.setUploadId);
+  const setTotalRows = useTransformStore((state) => state.setTotalRows);
   const setTransformMapping = useTransformStore((state) => state.setMapping);
   const resetTransform = useTransformStore((state) => state.resetTransform);
 
@@ -217,6 +223,7 @@ export function TransformUpload() {
       });
       setResult(data);
       setUploadId(data.uploadId);
+      setTotalRows(data.totalRows);
       setUploadState((current) => current ? { ...current, progress: 100, status: "complete" } : current);
       toast.success("CSV uploaded successfully.");
     } catch (error) {
@@ -585,13 +592,15 @@ export function TransformUpload() {
         </Card>
       ) : null}
 
-      <FiltersSection
-        filtersRef={filtersRef}
-        totalRows={result?.totalRows ?? 0}
-        previewRows={previewRows}
-        sourceColumns={result?.headers ?? []}
-        inputFile={uploadState?.fileName ?? ""}
-      />
+      <div ref={filtersRef} className="scroll-mt-6">
+        {uploadId && storeMapping.length > 0 && totalRows > 0 && (
+          <FilterPanel
+            uploadId={uploadId}
+            mapping={storeMapping}
+            totalRows={totalRows}
+          />
+        )}
+      </div>
     </div>
   );
 }

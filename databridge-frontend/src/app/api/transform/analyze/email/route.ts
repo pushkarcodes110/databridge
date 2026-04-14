@@ -8,11 +8,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type EmailAnalysis = {
-  total: number;
-  breakdown: { domain: string; count: number; percentage: number }[];
+  totalEmails: number;
+  domains: { domain: string; count: number; percentage: number }[];
   invalidFormat: number;
   emptyEmails: number;
-  duplicateEmails: number;
+  duplicates: number;
 };
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -70,11 +70,11 @@ async function analyzeEmailColumn(filePath: string, sourceColumn: string) {
           .sort((a, b) => b.count - a.count || a.domain.localeCompare(b.domain));
 
         resolve({
-          total,
-          breakdown,
+          totalEmails: total,
+          domains: breakdown,
           invalidFormat,
           emptyEmails,
-          duplicateEmails,
+          duplicates: duplicateEmails,
         });
       });
   });
