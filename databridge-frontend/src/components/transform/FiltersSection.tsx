@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode, RefObject, useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Mail, ScanSearch, UsersRound } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, Mail, ScanSearch, UsersRound } from "lucide-react";
 import {
   Cell,
   Pie,
@@ -50,6 +50,37 @@ type DuplicateAnalysis = {
   fullDuplicates: number;
   emailDuplicates: number;
   totalRows: number;
+};
+
+type RunStats = {
+  inputRows: number;
+  outputRows: number;
+  rowsRemoved: number;
+  rowsRemovedFullDupe: number;
+  rowsRemovedEmailDupe: number;
+  rowsRemovedInvalidEmail: number;
+  emailsTypoFixed: number;
+  rowsRemovedWrongGender: number;
+  maleCount: number;
+  femaleCount: number;
+  unknownCount: number;
+};
+
+type RunEvent = {
+  step: string;
+  progress?: number;
+  rowsProcessed?: number;
+  outputFile?: string;
+  error?: string;
+  stats?: RunStats;
+  rowsRemovedFullDupe?: number;
+  rowsRemovedEmailDupe?: number;
+  rowsRemovedInvalidEmail?: number;
+  emailsTypoFixed?: number;
+  rowsRemovedWrongGender?: number;
+  maleCount?: number;
+  femaleCount?: number;
+  unknownCount?: number;
 };
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -828,11 +859,110 @@ function DuplicateRemoverConfigPanel({
   );
 }
 
+function ProcessingModal({
+  open,
+  event,
+  events,
+  onClose,
+}: {
+  open: boolean;
+  event: RunEvent | null;
+  events: RunEvent[];
+  onClose: () => void;
+}) {
+  if (!open) return null;
+
+  const isComplete = event?.step === "complete";
+  const isError = event?.step === "error";
+  const stats = event?.stats;
+  const progress = isComplete ? 100 : Math.min(Number(event?.progress ?? 0), 100);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-6 backdrop-blur">
+      <div className="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-lg border bg-card p-6 shadow-xl">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold">Processing Transform</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {isComplete ? "Transform complete." : isError ? "Transform failed." : `Running ${event?.step ?? "pipeline"} step...`}
+            </p>
+          </div>
+          {(isComplete || isError) ? (
+            <Button variant="outline" onClick={onClose}>Close</Button>
+          ) : null}
+        </div>
+
+        <div className="mt-6">
+          <div className="mb-2 flex items-center justify-between text-sm">
+            <span className="font-medium">{event?.step ?? "starting"}</span>
+            <span className="text-muted-foreground tabular-nums">{progress}%</span>
+          </div>
+          <div className="h-3 overflow-hidden rounded-full bg-muted">
+            <div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+
+        {stats ? (
+          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+            <StatCard label="Input Rows" value={stats.inputRows} />
+            <StatCard label="Output Rows" value={stats.outputRows} />
+            <StatCard label="Rows Removed" value={stats.rowsRemoved} />
+          </div>
+        ) : null}
+
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard label="Full Duplicates" value={stats?.rowsRemovedFullDupe ?? event?.rowsRemovedFullDupe ?? 0} />
+          <StatCard label="Email Duplicates" value={stats?.rowsRemovedEmailDupe ?? event?.rowsRemovedEmailDupe ?? 0} />
+          <StatCard label="Email Filter" value={stats?.rowsRemovedInvalidEmail ?? event?.rowsRemovedInvalidEmail ?? 0} />
+          <StatCard label="Gender Filter" value={stats?.rowsRemovedWrongGender ?? event?.rowsRemovedWrongGender ?? 0} />
+        </div>
+
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard label="Emails Typo-Fixed" value={stats?.emailsTypoFixed ?? event?.emailsTypoFixed ?? 0} />
+          <StatCard label="Male" value={stats?.maleCount ?? event?.maleCount ?? 0} />
+          <StatCard label="Female" value={stats?.femaleCount ?? event?.femaleCount ?? 0} />
+          <StatCard label="Unknown" value={stats?.unknownCount ?? event?.unknownCount ?? 0} />
+        </div>
+
+        {isError ? (
+          <div className="mt-6 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+            {event?.error || "Transform failed."}
+          </div>
+        ) : null}
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          {event?.outputFile ? (
+            <Button onClick={() => window.location.assign(event.outputFile as string)}>
+              <Download className="mr-2 h-4 w-4" />
+              Download CSV
+            </Button>
+          ) : null}
+          <Button variant="outline" disabled>
+            Save to NocoDB
+          </Button>
+        </div>
+
+        <div className="mt-6 rounded-lg border bg-background p-4">
+          <div className="mb-2 text-sm font-medium">Live events</div>
+          <div className="max-h-44 space-y-1 overflow-auto font-mono text-xs text-muted-foreground">
+            {events.map((item, index) => (
+              <div key={index}>{JSON.stringify(item)}</div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersRef }: FiltersSectionProps) {
   const mapping = useTransformStore((state) => state.mapping);
   const filters = useTransformStore((state) => state.filters);
   const setFilterEnabled = useTransformStore((state) => state.setFilterEnabled);
   const estimate = useFilterEstimate(totalRows, previewRows, filters);
+  const [runModalOpen, setRunModalOpen] = useState(false);
+  const [runEvents, setRunEvents] = useState<RunEvent[]>([]);
+  const [latestRunEvent, setLatestRunEvent] = useState<RunEvent | null>(null);
 
   const mappedColumns = useMemo(
     () => mapping.map((item: TransformMapping) => item.outputColumn),
@@ -841,8 +971,64 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersR
 
   const runDisabled = mapping.length === 0;
 
+  const handleRunTransform = async () => {
+    const state = useTransformStore.getState();
+    setRunModalOpen(true);
+    setRunEvents([]);
+    setLatestRunEvent({ step: "starting", progress: 0 });
+
+    try {
+      const response = await fetch("/api/transform/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uploadId: state.uploadId,
+          mapping: state.mapping,
+          filters: state.filters,
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error("Transform pipeline failed to start.");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+
+        events.forEach((rawEvent) => {
+          const line = rawEvent.split("\n").find((item) => item.startsWith("data: "));
+          if (!line) return;
+          const parsed = JSON.parse(line.slice("data: ".length)) as RunEvent;
+          setLatestRunEvent(parsed);
+          setRunEvents((current) => [...current, parsed]);
+        });
+      }
+    } catch (error) {
+      const event = {
+        step: "error",
+        error: error instanceof Error ? error.message : "Transform failed.",
+      };
+      setLatestRunEvent(event);
+      setRunEvents((current) => [...current, event]);
+    }
+  };
+
   return (
     <section ref={filtersRef} className="scroll-mt-8 space-y-6">
+      <ProcessingModal
+        open={runModalOpen}
+        event={latestRunEvent}
+        events={runEvents}
+        onClose={() => setRunModalOpen(false)}
+      />
       <div className="sticky top-0 z-10 rounded-lg border bg-card/95 p-4 shadow-sm backdrop-blur">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -890,7 +1076,7 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersR
         </FilterCard>
       </div>
 
-      <Button size="lg" className="h-12 w-full text-base" disabled={runDisabled}>
+      <Button size="lg" className="h-12 w-full text-base" disabled={runDisabled} onClick={handleRunTransform}>
         Run Transform
       </Button>
     </section>
