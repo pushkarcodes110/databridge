@@ -23,6 +23,12 @@ type GenderServiceResponse = {
 };
 
 const genderServiceUrl = process.env.GENDER_SERVICE_URL || process.env.EMAIL_VALIDATOR_URL || "http://localhost:8001";
+const genderServiceUrls = Array.from(new Set([
+  genderServiceUrl,
+  "http://email-validator:8001",
+  "http://host.docker.internal:8001",
+  "http://localhost:8001",
+]));
 
 function firstNameFromValue(value: string) {
   return value.trim().split(/[\s-]+/)[0] || "";
@@ -67,16 +73,29 @@ export async function POST(request: Request) {
     await access(filePath);
 
     const { names, rowsRead } = await readNameSample(filePath, nameColumn, sampleSize);
-    const response = await fetch(`${genderServiceUrl}/classify-gender`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ names }),
-    });
+    let data: GenderServiceResponse | { error?: string } | null = null;
+    let serviceError: string | undefined;
 
-    const data = await response.json() as GenderServiceResponse | { error?: string };
-    if (!response.ok) {
+    for (const serviceUrl of genderServiceUrls) {
+      try {
+        const response = await fetch(`${serviceUrl}/classify-gender`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ names }),
+        });
+
+        data = await response.json() as GenderServiceResponse | { error?: string };
+        if (response.ok) break;
+        serviceError = "error" in data ? data.error : "Gender service failed.";
+        data = null;
+      } catch (error) {
+        serviceError = error instanceof Error ? error.message : "Gender service failed.";
+      }
+    }
+
+    if (!data) {
       return NextResponse.json(
-        { error: "Gender service failed.", detail: "error" in data ? data.error : undefined },
+        { error: "Gender service failed.", detail: serviceError },
         { status: 502 }
       );
     }

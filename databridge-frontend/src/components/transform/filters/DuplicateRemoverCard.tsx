@@ -43,7 +43,7 @@ export function DuplicateRemoverCard({ uploadId, emailColumn, onStatsChange }: D
 
       let isCancelled = false;
 
-      async function fetchAnalysis() {
+      const fetchAnalysis = async () => {
         if (!emailColumn) {
           setError("An 'email' column must be mapped to use deduplication.");
           return;
@@ -75,7 +75,7 @@ export function DuplicateRemoverCard({ uploadId, emailColumn, onStatsChange }: D
             setLoading(false);
           }
         }
-      }
+      };
 
       // Fetch on mount or when column changes
       fetchAnalysis();

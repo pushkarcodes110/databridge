@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode, RefObject, useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Download, Mail, ScanSearch, UsersRound } from "lucide-react";
+import { ChevronDown, ChevronRight, Database, Download, Mail, ScanSearch, UsersRound } from "lucide-react";
 import {
   Cell,
   Pie,
@@ -15,6 +15,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { TransformFilters, TransformMapping, useTransformStore } from "@/lib/transform-store";
+import { ColumnMapper } from "@/components/ColumnMapper";
+import { DataPreview } from "@/components/DataPreview";
+import { ImportProgress } from "@/components/ImportProgress";
+import { createJob, createTable, getBases, getFields, getTables } from "@/lib/api";
 
 type FilterEstimate = {
   email: number;
@@ -31,6 +35,8 @@ type FiltersSectionProps = {
   sourceColumns: string[];
   inputFile: string;
   filtersRef: RefObject<HTMLDivElement>;
+  outputFileName: string;
+  autoImportToNoco: boolean;
 };
 
 type EmailAnalysis = {
@@ -85,6 +91,39 @@ type RunEvent = {
   maleCount?: number;
   femaleCount?: number;
   unknownCount?: number;
+  validationMode?: string;
+  verifyMailbox?: boolean;
+  batchSize?: number;
+  importJobId?: string;
+  tableName?: string;
+};
+
+type TransformOutputPreview = {
+  columns: string[];
+  rows: Record<string, string>[];
+  stats: {
+    total_rows: number;
+    unique_rows: number;
+    file_size_mb: number;
+  };
+  filePath: string;
+  filename: string;
+};
+
+type NocoBase = {
+  id: string;
+  title: string;
+};
+
+type NocoTable = {
+  id: string;
+  title: string;
+};
+
+type NocoField = {
+  title: string;
+  column_name?: string;
+  uidt?: string;
 };
 
 type TransformHistoryEntry = {
@@ -476,6 +515,7 @@ function EmailFilterConfigPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [domainSearch, setDomainSearch] = useState("");
+  const [domainsExpanded, setDomainsExpanded] = useState(false);
 
   const selectedMapping = useMemo(
     () => mapping.find((item) => item.outputColumn === emailConfig.column),
@@ -494,8 +534,9 @@ function EmailFilterConfigPanel({
     const controller = new AbortController();
     setIsLoading(true);
     setError("");
+    setDomainsExpanded(false);
 
-    fetch(`/api/transform/analyze/email?uploadId=${encodeURIComponent(uploadId)}&sourceColumn=${encodeURIComponent(sourceColumn)}`, {
+    fetch(`/api/transform/analyze/email?uploadId=${encodeURIComponent(uploadId)}&sourceColumn=${encodeURIComponent(sourceColumn)}&fixTypos=${emailConfig.fixCommonTypos}&normalize=${emailConfig.normalizeLowercase}`, {
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -519,7 +560,7 @@ function EmailFilterConfigPanel({
       });
 
     return () => controller.abort();
-  }, [sourceColumn, setEmailConfig, uploadId]);
+  }, [emailConfig.fixCommonTypos, emailConfig.normalizeLowercase, sourceColumn, setEmailConfig, uploadId]);
 
   const chartData = useMemo(() => buildChartData(analysis?.breakdown ?? []), [analysis]);
   const selectedDomainSet = useMemo(() => new Set(emailConfig.selectedDomains), [emailConfig.selectedDomains]);
@@ -527,6 +568,10 @@ function EmailFilterConfigPanel({
     const query = domainSearch.trim().toLowerCase();
     return (analysis?.breakdown ?? []).filter((item) => item.domain.includes(query));
   }, [analysis, domainSearch]);
+  const visibleDomains = useMemo(() => {
+    if (domainSearch.trim() || domainsExpanded) return filteredDomains;
+    return filteredDomains.slice(0, 15);
+  }, [domainSearch, domainsExpanded, filteredDomains]);
   const keptEmails = useMemo(
     () => (analysis?.breakdown ?? []).reduce((sum, item) => selectedDomainSet.has(item.domain) ? sum + item.count : sum, 0),
     [analysis, selectedDomainSet]
@@ -665,7 +710,7 @@ function EmailFilterConfigPanel({
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredDomains.map((item) => (
+                    {visibleDomains.map((item) => (
                       <tr key={item.domain} className="border-t">
                         <td className="px-3 py-2">
                           <input
@@ -691,6 +736,18 @@ function EmailFilterConfigPanel({
                   </tbody>
                 </table>
               </div>
+              {!domainSearch.trim() && filteredDomains.length > 15 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-3 w-full"
+                  onClick={() => setDomainsExpanded((current) => !current)}
+                >
+                  {domainsExpanded
+                    ? "Show fewer domains"
+                    : `View more domains (${(filteredDomains.length - visibleDomains.length).toLocaleString()} more)`}
+                </Button>
+              ) : null}
             </div>
           </div>
 
@@ -772,10 +829,10 @@ function DedupeColumnToggle({
 }
 
 function DuplicateRemoverConfigPanel({
-  sourceColumns,
+  mappedColumns,
   enabled,
 }: {
-  sourceColumns: string[];
+  mappedColumns: string[];
   enabled: boolean;
 }) {
   const uploadId = useTransformStore((state) => state.uploadId);
@@ -788,9 +845,9 @@ function DuplicateRemoverConfigPanel({
 
   const guessedEmailColumn = useMemo(() => {
     if (dedupeConfig.emailColumn) return dedupeConfig.emailColumn;
-    if (emailConfig.column && sourceColumns.includes(emailConfig.column)) return emailConfig.column;
-    return sourceColumns.find((column) => column.toLowerCase().includes("email")) ?? "";
-  }, [dedupeConfig.emailColumn, emailConfig.column, sourceColumns]);
+    if (emailConfig.column && mappedColumns.includes(emailConfig.column)) return emailConfig.column;
+    return mappedColumns.find((column) => column.toLowerCase().includes("email")) ?? "";
+  }, [dedupeConfig.emailColumn, emailConfig.column, mappedColumns]);
 
   useEffect(() => {
     if (!dedupeConfig.emailColumn && guessedEmailColumn) {
@@ -832,10 +889,10 @@ function DuplicateRemoverConfigPanel({
   return (
     <div className="space-y-4">
       <ColumnSelect
-        label="Email source column"
+        label="Email output column"
         value={dedupeConfig.emailColumn}
         onChange={(emailColumn) => setDedupeConfig({ emailColumn })}
-        columns={sourceColumns}
+        columns={mappedColumns}
       />
 
       <div className="grid gap-3 lg:grid-cols-2">
@@ -902,11 +959,13 @@ function ProcessingModal({
   event,
   events,
   onClose,
+  onSaveToNocoDB,
 }: {
   open: boolean;
   event: RunEvent | null;
   events: RunEvent[];
   onClose: () => void;
+  onSaveToNocoDB: () => void;
 }) {
   if (!open) return null;
 
@@ -927,7 +986,9 @@ function ProcessingModal({
           </div>
           {(isComplete || isError) ? (
             <Button variant="outline" onClick={onClose}>Close</Button>
-          ) : null}
+          ) : (
+            <Button variant="outline" onClick={onClose}>Run in background</Button>
+          )}
         </div>
 
         <div className="mt-6">
@@ -981,7 +1042,7 @@ function ProcessingModal({
               Download CSV
             </Button>
           ) : null}
-          <Button variant="outline" disabled>
+          <Button variant="outline" disabled={!isComplete || !event?.outputFile} onClick={onSaveToNocoDB}>
             Save to NocoDB
           </Button>
         </div>
@@ -999,12 +1060,266 @@ function ProcessingModal({
   );
 }
 
-export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFile, filtersRef }: FiltersSectionProps) {
+function TransformImportModal({
+  open,
+  uploadId,
+  onClose,
+}: {
+  open: boolean;
+  uploadId: string;
+  onClose: () => void;
+}) {
+  const [preview, setPreview] = useState<TransformOutputPreview | null>(null);
+  const [bases, setBases] = useState<NocoBase[]>([]);
+  const [tables, setTables] = useState<NocoTable[]>([]);
+  const [fields, setFields] = useState<NocoField[]>([]);
+  const [selectedBase, setSelectedBase] = useState("");
+  const [selectedTable, setSelectedTable] = useState("");
+  const [isCreatingTable, setIsCreatingTable] = useState(false);
+  const [newTableName, setNewTableName] = useState("");
+  const [jobId, setJobId] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open || !uploadId) return;
+
+    setIsLoading(true);
+    setError("");
+    setJobId("");
+
+    Promise.all([
+      fetch(`/api/transform/preview/${encodeURIComponent(uploadId)}`).then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "Failed to load transformed CSV preview.");
+        return data as TransformOutputPreview;
+      }),
+      getBases() as Promise<NocoBase[]>,
+    ])
+      .then(([previewData, baseData]) => {
+        setPreview(previewData);
+        setBases(baseData);
+      })
+      .catch((loadError) => {
+        setError(loadError instanceof Error ? loadError.message : "Failed to prepare NocoDB import.");
+      })
+      .finally(() => setIsLoading(false));
+  }, [open, uploadId]);
+
+  useEffect(() => {
+    if (!selectedBase) {
+      setTables([]);
+      setSelectedTable("");
+      return;
+    }
+
+    getTables(selectedBase)
+      .then((data) => setTables(data as NocoTable[]))
+      .catch((loadError) => {
+        setError(loadError instanceof Error ? loadError.message : "Failed to load NocoDB tables.");
+      });
+  }, [selectedBase]);
+
+  useEffect(() => {
+    if (!preview) {
+      setFields([]);
+      return;
+    }
+
+    if (isCreatingTable) {
+      setFields([
+        { title: "Id", column_name: "id", uidt: "ID" },
+        ...preview.columns.map((column) => {
+          let safeName = column.trim().replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "").toLowerCase();
+          if (safeName === "id" || !safeName) safeName = `csv_${safeName || "field"}`;
+          return { title: column, column_name: safeName, uidt: "SingleLineText" };
+        }),
+      ]);
+      return;
+    }
+
+    if (selectedTable) {
+      getFields(selectedTable, selectedBase)
+        .then((data) => setFields(data as NocoField[]))
+        .catch((loadError) => {
+          setError(loadError instanceof Error ? loadError.message : "Failed to load NocoDB fields.");
+        });
+      return;
+    }
+
+    setFields([]);
+  }, [isCreatingTable, preview, selectedBase, selectedTable]);
+
+  if (!open) return null;
+
+  const resetAndClose = () => {
+    setSelectedBase("");
+    setSelectedTable("");
+    setIsCreatingTable(false);
+    setNewTableName("");
+    setJobId("");
+    setError("");
+    onClose();
+  };
+
+  const handleMappingComplete = async (columnMapping: Record<string, string>) => {
+    if (!preview || !selectedBase || (!selectedTable && !isCreatingTable)) {
+      setError("Choose a NocoDB base and table before starting the import.");
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      setError("");
+      let targetTableId = selectedTable;
+
+      if (isCreatingTable) {
+        const created = await createTable(selectedBase, {
+          table_name: newTableName,
+          columns: Object.values(columnMapping),
+        }) as { id: string };
+        targetTableId = created.id;
+      }
+
+      const job = await createJob({
+        filename: preview.filename,
+        file_path: preview.filePath,
+        file_size: preview.stats.total_rows,
+        total_rows: preview.stats.total_rows,
+        file_format: "csv",
+        nocodb_base_id: selectedBase,
+        nocodb_table_id: targetTableId,
+        column_mapping: columnMapping,
+        options: { source: "transform", uploadId },
+      }) as { id: string };
+
+      setJobId(job.id);
+      toast.success("NocoDB import started.");
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Failed to start NocoDB import.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-background/85 p-6 backdrop-blur">
+      <div className="max-h-[92vh] w-full max-w-6xl overflow-auto rounded-lg border bg-card p-6 shadow-xl">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold">Save Transform to NocoDB</h2>
+            <p className="mt-1 text-sm text-muted-foreground">Choose a target base, table, and column mapping for the transformed CSV.</p>
+          </div>
+          <Button type="button" variant="outline" onClick={resetAndClose}>Close</Button>
+        </div>
+
+        {isLoading ? (
+          <div className="mt-6 rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+            Preparing transformed CSV import...
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="mt-6 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+
+        {jobId ? (
+          <div className="mt-6">
+            <ImportProgress jobId={jobId} />
+          </div>
+        ) : preview ? (
+          <div className="mt-6 grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+            <div className="space-y-4 rounded-lg border bg-background p-4">
+              <h3 className="flex items-center font-semibold"><Database className="mr-2 h-4 w-4 text-primary" /> Target Destination</h3>
+
+              <label className="block space-y-2 text-sm">
+                <span className="font-medium text-muted-foreground">Select Base</span>
+                <select
+                  value={selectedBase}
+                  onChange={(event) => {
+                    setSelectedBase(event.target.value);
+                    setSelectedTable("");
+                    setIsCreatingTable(false);
+                  }}
+                  className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+                >
+                  <option value="">Choose Base</option>
+                  {bases.map((base) => <option key={base.id} value={base.id}>{base.title}</option>)}
+                </select>
+              </label>
+
+              {selectedBase ? (
+                <label className="block space-y-2 text-sm">
+                  <span className="font-medium text-muted-foreground">Select Table</span>
+                  <select
+                    value={isCreatingTable ? "new" : selectedTable}
+                    onChange={(event) => {
+                      if (event.target.value === "new") {
+                        setIsCreatingTable(true);
+                        setSelectedTable("");
+                      } else {
+                        setIsCreatingTable(false);
+                        setSelectedTable(event.target.value);
+                      }
+                    }}
+                    className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="">Choose Table</option>
+                    <option value="new">Create New Table</option>
+                    {tables.map((table) => <option key={table.id} value={table.id}>{table.title}</option>)}
+                  </select>
+                </label>
+              ) : null}
+
+              {isCreatingTable ? (
+                <label className="block space-y-2 text-sm">
+                  <span className="font-medium text-muted-foreground">New Table Name</span>
+                  <input
+                    value={newTableName}
+                    onChange={(event) => setNewTableName(event.target.value)}
+                    placeholder="Transformed contacts"
+                    className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+                  />
+                </label>
+              ) : null}
+            </div>
+
+            <div className="space-y-6">
+              <DataPreview columns={preview.columns} rows={preview.rows} stats={preview.stats} />
+
+              {(selectedTable || (isCreatingTable && newTableName.trim())) ? (
+                <div className={isSubmitting ? "pointer-events-none opacity-60" : ""}>
+                  <ColumnMapper
+                    csvColumns={preview.columns}
+                    nocoFields={fields}
+                    onMapComplete={handleMappingComplete}
+                    onCancel={resetAndClose}
+                  />
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  Select a target Base and Table to map columns before importing.
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFile, filtersRef, outputFileName, autoImportToNoco }: FiltersSectionProps) {
   const mapping = useTransformStore((state) => state.mapping);
+  const uploadId = useTransformStore((state) => state.uploadId);
   const filters = useTransformStore((state) => state.filters);
   const setFilterEnabled = useTransformStore((state) => state.setFilterEnabled);
   const estimate = useFilterEstimate(totalRows, previewRows, filters);
   const [runModalOpen, setRunModalOpen] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
   const [runEvents, setRunEvents] = useState<RunEvent[]>([]);
   const [latestRunEvent, setLatestRunEvent] = useState<RunEvent | null>(null);
   const [history, setHistory] = useState<TransformHistoryEntry[]>([]);
@@ -1041,36 +1356,46 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFil
     setLatestRunEvent({ step: "starting", progress: 0 });
 
     try {
-      const response = await fetch("/api/transform/run", {
+      const response = await fetch("/api/transform/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          uploadId: state.uploadId,
-          mapping: state.mapping,
-          filters: state.filters,
+          config: {
+            uploadId: state.uploadId,
+            totalRows: state.totalRows,
+            mapping: state.mapping,
+            filters: state.filters,
+          },
+          autoImport: {
+            enabled: autoImportToNoco,
+            tableName: outputFileName || inputFile || "transformed_contacts",
+          },
         }),
       });
 
-      if (!response.ok || !response.body) {
-        throw new Error("Transform pipeline failed to start.");
+      const created = await response.json();
+      if (!response.ok) {
+        throw new Error(created?.error || "Transform pipeline failed to start.");
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const jobId = created.id as string;
+      const seenEvents = new Set<string>();
 
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() ?? "";
+        const jobResponse = await fetch(`/api/transform/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+        const job = await jobResponse.json();
+        if (!jobResponse.ok) throw new Error(job?.error || "Failed to read transform job progress.");
 
-        events.forEach((rawEvent) => {
-          const line = rawEvent.split("\n").find((item) => item.startsWith("data: "));
-          if (!line) return;
-          const parsed = JSON.parse(line.slice("data: ".length)) as RunEvent;
+        const events = (job.events || []) as RunEvent[];
+        events.forEach((parsed, index) => {
+          const eventKey = `${index}:${JSON.stringify(parsed)}`;
+          if (seenEvents.has(eventKey)) return;
+          seenEvents.add(eventKey);
+
           if (parsed.warning) toast.warning(parsed.warning);
+          if (parsed.step === "noco_import" && parsed.importJobId) {
+            toast.success(`NocoDB import started for ${parsed.tableName || outputFileName}.`);
+          }
           if (parsed.step === "complete" && parsed.stats) {
             saveHistoryEntry({
               date: new Date().toISOString(),
@@ -1084,6 +1409,14 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFil
           setLatestRunEvent(parsed);
           setRunEvents((current) => [...current, parsed]);
         });
+
+        if (job.status === "complete" || job.status === "failed") {
+          if (job.importError) toast.error(job.importError);
+          if (job.latestEvent) setLatestRunEvent(job.latestEvent as RunEvent);
+          break;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     } catch (error) {
       const event = {
@@ -1102,6 +1435,12 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFil
         event={latestRunEvent}
         events={runEvents}
         onClose={() => setRunModalOpen(false)}
+        onSaveToNocoDB={() => setImportModalOpen(true)}
+      />
+      <TransformImportModal
+        open={importModalOpen}
+        uploadId={uploadId}
+        onClose={() => setImportModalOpen(false)}
       />
       <div className="sticky top-0 z-10 rounded-lg border bg-card/95 p-4 shadow-sm backdrop-blur">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1146,7 +1485,7 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFil
           onEnabledChange={(enabled) => setFilterEnabled("deduplication", enabled)}
           miniStat={`Will remove ${estimate.deduplication.toLocaleString()} rows`}
         >
-          <DuplicateRemoverConfigPanel sourceColumns={sourceColumns} enabled={filters.deduplication.enabled} />
+          <DuplicateRemoverConfigPanel mappedColumns={mappedColumns} enabled={filters.deduplication.enabled} />
         </FilterCard>
       </div>
 

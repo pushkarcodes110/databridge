@@ -35,7 +35,7 @@ export function GenderFilterCard({ uploadId, nameColumn, onStatsChange }: Gender
 
       let isCancelled = false;
 
-      async function fetchAnalysis() {
+      const fetchAnalysis = async () => {
         setLoading(true);
         setError(null);
         try {
@@ -60,7 +60,7 @@ export function GenderFilterCard({ uploadId, nameColumn, onStatsChange }: Gender
             setLoading(false);
           }
         }
-      }
+      };
 
       if (!data || config.nameColumn !== nameColumn) {
         fetchAnalysis();

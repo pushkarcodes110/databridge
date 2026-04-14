@@ -20,7 +20,7 @@ import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import FilterPanel from "@/components/transform/FilterPanel";
+import { FiltersSection } from "@/components/transform/FiltersSection";
 import { cn } from "@/lib/utils";
 import { TransformMapping, useTransformStore } from "@/lib/transform-store";
 
@@ -55,6 +55,27 @@ function formatBytes(bytes: number) {
   const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / Math.pow(1024, unitIndex);
   return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+const defaultOutputColumns = ["name", "email", "phone"];
+
+function fileNameWithoutExtension(fileName: string) {
+  return fileName.replace(/\.[^.]+$/, "").trim();
+}
+
+function inferSourceColumn(headers: string[], outputColumn: string) {
+  const normalizedOutput = outputColumn.toLowerCase();
+  return headers.find((header) => header.trim().toLowerCase() === normalizedOutput)
+    || headers.find((header) => header.trim().toLowerCase().includes(normalizedOutput))
+    || null;
+}
+
+function createDefaultOutputSlots(headers: string[]): OutputColumnSlot[] {
+  return defaultOutputColumns.map((outputColumn) => ({
+    id: `output:${crypto.randomUUID()}`,
+    outputColumn,
+    sourceColumn: inferSourceColumn(headers, outputColumn),
+  }));
 }
 
 function uploadCsv(file: File, onProgress: (progress: number) => void) {
@@ -191,6 +212,8 @@ export function TransformUpload() {
   const [outputSlots, setOutputSlots] = useState<OutputColumnSlot[]>([]);
   const [newOutputColumn, setNewOutputColumn] = useState("");
   const [activeSourceColumn, setActiveSourceColumn] = useState<string | null>(null);
+  const [outputFileName, setOutputFileName] = useState("");
+  const [autoImportToNoco, setAutoImportToNoco] = useState(true);
   const filtersRef = useRef<HTMLDivElement>(null);
   
   const uploadId = useTransformStore((state) => state.uploadId);
@@ -200,6 +223,9 @@ export function TransformUpload() {
   const setUploadId = useTransformStore((state) => state.setUploadId);
   const setTotalRows = useTransformStore((state) => state.setTotalRows);
   const setTransformMapping = useTransformStore((state) => state.setMapping);
+  const setFilterEnabled = useTransformStore((state) => state.setFilterEnabled);
+  const setEmailConfig = useTransformStore((state) => state.setEmailConfig);
+  const setDedupeConfig = useTransformStore((state) => state.setDedupeConfig);
   const resetTransform = useTransformStore((state) => state.resetTransform);
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
@@ -209,6 +235,8 @@ export function TransformUpload() {
     setResult(null);
     setOutputSlots([]);
     setNewOutputColumn("");
+    setOutputFileName(fileNameWithoutExtension(file.name));
+    setAutoImportToNoco(true);
     resetTransform();
     setUploadState({
       fileName: file.name,
@@ -222,6 +250,7 @@ export function TransformUpload() {
         setUploadState((current) => current ? { ...current, progress } : current);
       });
       setResult(data);
+      setOutputSlots(createDefaultOutputSlots(data.headers));
       setUploadId(data.uploadId);
       setTotalRows(data.totalRows);
       setUploadState((current) => current ? { ...current, progress: 100, status: "complete" } : current);
@@ -231,7 +260,7 @@ export function TransformUpload() {
       setUploadState((current) => current ? { ...current, status: "error" } : current);
       toast.error(message);
     }
-  }, [resetTransform, setUploadId]);
+  }, [resetTransform, setTotalRows, setUploadId]);
 
   const { getRootProps, getInputProps, isDragActive, isDragReject } = useDropzone({
     onDrop,
@@ -333,10 +362,27 @@ export function TransformUpload() {
 
   const handleNext = useCallback(() => {
     setTransformMapping(mapping);
+    const emailMapping = mapping.find((item) => item.outputColumn.toLowerCase() === "email");
+    if (emailMapping) {
+      setFilterEnabled("email", true);
+      setEmailConfig({
+        column: "email",
+        removeInvalidFormat: true,
+        verifyMailboxExists: true,
+        normalizeLowercase: true,
+        fixCommonTypos: true,
+      });
+      setFilterEnabled("deduplication", true);
+      setDedupeConfig({
+        removeFullDuplicates: true,
+        removeDuplicateEmails: true,
+        emailColumn: "email",
+      });
+    }
     requestAnimationFrame(() => {
       filtersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
-  }, [mapping, setTransformMapping]);
+  }, [mapping, setDedupeConfig, setEmailConfig, setFilterEnabled, setTransformMapping]);
 
   return (
     <div className="space-y-6">
@@ -407,6 +453,27 @@ export function TransformUpload() {
                 <p className="text-xs text-muted-foreground">Rows</p>
                 <p className="mt-1 font-semibold">{result.totalRows.toLocaleString()}</p>
               </div>
+            </div>
+
+            <div className="grid gap-3 rounded-lg border bg-background p-4 text-sm md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+              <label className="space-y-2">
+                <span className="font-medium">Final file and NocoDB table name</span>
+                <input
+                  value={outputFileName}
+                  onChange={(event) => setOutputFileName(event.target.value)}
+                  placeholder="contacts_april"
+                  className="w-full rounded-lg border bg-card px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+                />
+              </label>
+              <label className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={autoImportToNoco}
+                  onChange={(event) => setAutoImportToNoco(event.target.checked)}
+                  className="h-4 w-4"
+                />
+                <span className="text-sm font-medium">Auto import to default NocoDB base</span>
+              </label>
             </div>
 
             <div className="space-y-4 md:hidden">
@@ -593,11 +660,15 @@ export function TransformUpload() {
       ) : null}
 
       <div ref={filtersRef} className="scroll-mt-6">
-        {uploadId && storeMapping.length > 0 && totalRows > 0 && (
-          <FilterPanel
-            uploadId={uploadId}
-            mapping={storeMapping}
+        {result && uploadId && storeMapping.length > 0 && totalRows > 0 && (
+          <FiltersSection
             totalRows={totalRows}
+            previewRows={previewRows}
+            sourceColumns={result.headers}
+            inputFile={uploadState?.fileName ?? "Uploaded CSV"}
+            filtersRef={filtersRef}
+            outputFileName={outputFileName}
+            autoImportToNoco={autoImportToNoco}
           />
         )}
       </div>

@@ -11,7 +11,7 @@ import dns.asyncresolver
 import gender_guesser.detector as gender_detector
 import httpx
 from email_validator import EmailNotValidError, validate_email
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fuzzywuzzy import process
 from pydantic import BaseModel, Field
 
@@ -93,6 +93,21 @@ resolver.lifetime = 5.0
 resolver.timeout = 5.0
 gender_detector_instance = gender_detector.Detector(case_sensitive=False)
 genderize_api_key = os.getenv("GENDERIZE_API_KEY", "")
+reacher_configured_url = os.getenv("REACHER_URL", "").strip().rstrip("/")
+reacher_urls = [
+    url for url in dict.fromkeys([
+        reacher_configured_url,
+        "http://reacher:8080",
+        "http://host.docker.internal:8080",
+        "http://localhost:8080",
+    ]) if url
+]
+reacher_from_email = os.getenv("REACHER_FROM_EMAIL", "validator@databridge.local")
+reacher_hello_name = os.getenv("REACHER_HELLO_NAME", "databridge.local")
+reacher_bulk_timeout_seconds = int(os.getenv("REACHER_BULK_TIMEOUT_SECONDS", "300"))
+reacher_single_timeout_seconds = float(os.getenv("REACHER_SINGLE_TIMEOUT_SECONDS", "30"))
+reacher_concurrency = int(os.getenv("REACHER_CONCURRENCY", "50"))
+reacher_use_bulk = os.getenv("REACHER_USE_BULK", "false").lower() in {"1", "true", "yes", "on"}
 
 
 class ValidationStatus(str, Enum):
@@ -146,7 +161,10 @@ def normalize_email(email: str) -> str:
 
 
 def extract_first_name(name: str) -> str:
-    return name.strip().split()[0].split("-")[0].strip()
+    parts = name.strip().split()
+    if not parts:
+        return ""
+    return parts[0].split("-")[0].strip()
 
 
 def split_email(email: str) -> tuple[str, str]:
@@ -336,7 +354,217 @@ async def smtp_mailbox_check(email: str, hosts: list[str]) -> tuple[ValidationSt
     return ValidationStatus.unknown, "SMTP mailbox verification timed out or was blocked by the MX server."
 
 
-async def validate_one_email(email: str, options: ValidationOptions) -> EmailValidationResult:
+def reacher_request_body(email: str) -> dict[str, str]:
+    return {
+        "to_email": email,
+        "from_email": reacher_from_email,
+        "hello_name": reacher_hello_name,
+    }
+
+
+def result_from_reacher(
+    original: str,
+    cleaned: str,
+    typo_fixed: bool,
+    typo_reason: Optional[str],
+    result: dict,
+    options: ValidationOptions,
+) -> EmailValidationResult:
+    is_reachable = result.get("is_reachable")
+    syntax = result.get("syntax") if isinstance(result.get("syntax"), dict) else {}
+    mx = result.get("mx") if isinstance(result.get("mx"), dict) else {}
+
+    if syntax.get("is_valid_syntax") is False:
+        status = ValidationStatus.invalid
+    elif is_reachable == "safe":
+        status = ValidationStatus.typo_fixed if typo_fixed else ValidationStatus.valid
+    elif is_reachable == "invalid" or mx.get("accepts_mail") is False:
+        status = ValidationStatus.undeliverable
+    else:
+        status = ValidationStatus.unknown
+
+    should_drop = options.remove_invalid and (
+        status in {ValidationStatus.invalid, ValidationStatus.undeliverable}
+        or (options.verify_mailbox and status == ValidationStatus.unknown)
+    )
+    reason = f"Reacher verification: is_reachable={is_reachable or 'unknown'}"
+    if typo_reason:
+        reason = f"{typo_reason}; {reason}"
+
+    return EmailValidationResult(
+        original=original,
+        cleaned=None if should_drop else cleaned,
+        status=status.value,
+        reason=reason,
+    )
+
+
+async def reacher_single_check(client: httpx.AsyncClient, base_url: str, email: str) -> tuple[Optional[dict], bool]:
+    body = reacher_request_body(email)
+    for endpoint in ("/v1/check_email", "/v0/check_email"):
+        try:
+            response = await client.post(f"{base_url}{endpoint}", json=body)
+            if response.status_code in {404, 405}:
+                continue
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, dict) else None, True
+        except httpx.TimeoutException:
+            return None, True
+        except httpx.HTTPStatusError:
+            return None, True
+        except Exception:
+            continue
+
+    return None, False
+
+
+async def reacher_single_batch(emails: list[str]) -> Optional[list[Optional[dict]]]:
+    for base_url in reacher_urls:
+        try:
+            async with httpx.AsyncClient(timeout=reacher_single_timeout_seconds) as client:
+                semaphore = asyncio.Semaphore(reacher_concurrency)
+
+                async def bounded_check(email: str) -> tuple[Optional[dict], bool]:
+                    async with semaphore:
+                        return await reacher_single_check(client, base_url, email)
+
+                checked = await asyncio.gather(*(bounded_check(email) for email in emails))
+                results = [result for result, _reached in checked]
+                reached_service = any(reached for _result, reached in checked)
+                if reached_service or any(result is not None for result in results):
+                    return results
+        except Exception:
+            continue
+
+    return None
+
+
+async def reacher_bulk_check(emails: list[str]) -> Optional[list[dict]]:
+    if not emails:
+        return []
+
+    for base_url in reacher_urls:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(f"{base_url}/v1/bulk", json={"input": emails})
+                if response.status_code in {404, 405}:
+                    continue
+                response.raise_for_status()
+                job_id = response.json().get("job_id")
+                if job_id is None:
+                    continue
+
+                total_records = len(emails)
+                for _ in range(reacher_bulk_timeout_seconds):
+                    status_response = await client.get(f"{base_url}/v1/bulk/{job_id}")
+                    status_response.raise_for_status()
+                    status_data = status_response.json()
+                    total_records = int(status_data.get("total_records") or total_records)
+                    if status_data.get("job_status") == "Completed":
+                        break
+                    await asyncio.sleep(1)
+                else:
+                    continue
+
+                results: list[dict] = []
+                offset = 0
+                limit = 500
+                while offset < total_records:
+                    results_response = await client.get(
+                        f"{base_url}/v1/bulk/{job_id}/results",
+                        params={"limit": limit, "offset": offset},
+                    )
+                    results_response.raise_for_status()
+                    payload = results_response.json()
+                    batch = payload.get("results", payload)
+                    if isinstance(batch, dict):
+                        batch = list(batch.values())
+                    if not isinstance(batch, list) or not batch:
+                        break
+                    results.extend(item for item in batch if isinstance(item, dict))
+                    offset += len(batch)
+
+                if len(results) >= len(emails):
+                    return results[:len(emails)]
+        except Exception:
+            continue
+
+    return None
+
+
+async def reacher_check_batch(emails: list[str]) -> Optional[list[Optional[dict]]]:
+    if reacher_use_bulk:
+        bulk_results = await reacher_bulk_check(emails)
+        if bulk_results is not None:
+            return bulk_results
+    return await reacher_single_batch(emails)
+
+
+def prepare_email_for_reacher(
+    email: str,
+    options: ValidationOptions,
+) -> tuple[Optional[EmailValidationResult], Optional[str], bool, Optional[str]]:
+    original = email
+    cleaned = normalize_email(email) if options.normalize else email.strip()
+    typo_fixed = False
+    typo_reason = None
+
+    if options.fix_typos:
+        cleaned, typo_fixed, typo_reason = correct_domain_typos(cleaned)
+
+    normalized, format_error = validate_format(cleaned)
+    if format_error:
+        status = ValidationStatus.invalid if options.remove_invalid else ValidationStatus.unknown
+        return (
+            EmailValidationResult(
+                original=original,
+                cleaned=None if options.remove_invalid else cleaned,
+                status=status.value,
+                reason=format_error,
+            ),
+            None,
+            typo_fixed,
+            typo_reason,
+        )
+
+    return None, normalized or cleaned, typo_fixed, typo_reason
+
+
+async def validate_emails_with_reacher(payload: ValidateEmailsRequest) -> Optional[ValidateEmailsResponse]:
+    pending: list[tuple[int, str, str, bool, Optional[str]]] = []
+    results: list[Optional[EmailValidationResult]] = [None] * len(payload.emails)
+
+    for index, email in enumerate(payload.emails):
+        early_result, cleaned, typo_fixed, typo_reason = prepare_email_for_reacher(email, payload.options)
+        if early_result:
+            results[index] = early_result
+        elif cleaned:
+            pending.append((index, email, cleaned, typo_fixed, typo_reason))
+
+    if not pending:
+        return ValidateEmailsResponse(results=[result for result in results if result is not None])
+
+    reacher_results = await reacher_check_batch([item[2] for item in pending])
+    if reacher_results is None:
+        return None
+
+    for batch_index, (index, original, cleaned, typo_fixed, typo_reason) in enumerate(pending):
+        reacher_result = reacher_results[batch_index] if batch_index < len(reacher_results) else None
+        if reacher_result:
+            results[index] = result_from_reacher(original, cleaned, typo_fixed, typo_reason, reacher_result, payload.options)
+        else:
+            results[index] = EmailValidationResult(
+                original=original,
+                cleaned=None if payload.options.remove_invalid or payload.options.verify_mailbox else cleaned,
+                status=ValidationStatus.unknown.value,
+                reason="Reacher did not return a result for this email.",
+            )
+
+    return ValidateEmailsResponse(results=[result for result in results if result is not None])
+
+
+async def validate_one_email(email: str, options: ValidationOptions, use_reacher: bool = True) -> EmailValidationResult:
     original = email
     cleaned = normalize_email(email) if options.normalize else email.strip()
     typo_fixed = False
@@ -367,6 +595,11 @@ async def validate_one_email(email: str, options: ValidationOptions) -> EmailVal
         )
 
     if options.verify_mailbox:
+        if use_reacher:
+            reacher_results = await reacher_check_batch([cleaned])
+            if reacher_results and reacher_results[0]:
+                return result_from_reacher(original, cleaned, typo_fixed, typo_reason, reacher_results[0], options)
+
         smtp_status, smtp_reason = await smtp_mailbox_check(cleaned, hosts)
         if smtp_status == ValidationStatus.valid and typo_fixed:
             return EmailValidationResult(
@@ -393,11 +626,20 @@ async def validate_one_email(email: str, options: ValidationOptions) -> EmailVal
 
 @app.post("/validate-emails", response_model=ValidateEmailsResponse)
 async def validate_emails(payload: ValidateEmailsRequest) -> ValidateEmailsResponse:
+    if payload.options.verify_mailbox:
+        reacher_response = await validate_emails_with_reacher(payload)
+        if reacher_response:
+            return reacher_response
+        raise HTTPException(
+            status_code=503,
+            detail="Reacher email verification is unavailable. Start Reacher worker/API or disable mailbox verification.",
+        )
+
     semaphore = asyncio.Semaphore(20)
 
     async def bounded_validate(email: str) -> EmailValidationResult:
         async with semaphore:
-            return await validate_one_email(email, payload.options)
+            return await validate_one_email(email, payload.options, use_reacher=False)
 
     results = await asyncio.gather(*(bounded_validate(email) for email in payload.emails))
     return ValidateEmailsResponse(results=list(results))

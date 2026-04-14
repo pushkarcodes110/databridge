@@ -145,10 +145,12 @@ export default function FilterPanel({ uploadId, mapping, totalRows }: FilterPane
         )}
 
         {runStatus === "complete" && downloadUrl ? (
-          <Button size="lg" className="w-full sm:w-auto text-lg px-8 py-6 bg-green-600 hover:bg-green-700 text-white" asChild>
-            <a href={downloadUrl} download>
-              <Download className="mr-2 w-5 h-5" /> Download Reformed CSV
-            </a>
+          <Button
+            size="lg"
+            className="w-full sm:w-auto text-lg px-8 py-6 bg-green-600 hover:bg-green-700 text-white"
+            onClick={() => window.location.assign(downloadUrl)}
+          >
+            <Download className="mr-2 w-5 h-5" /> Download Reformed CSV
           </Button>
         ) : (
           <Button 

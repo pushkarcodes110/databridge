@@ -36,7 +36,7 @@ export function EmailFilterCard({ uploadId, sourceColumn, onStatsChange }: Email
 
       let isCancelled = false;
 
-      async function fetchAnalysis() {
+      const fetchAnalysis = async () => {
         setLoading(true);
         setError(null);
         try {
@@ -63,7 +63,7 @@ export function EmailFilterCard({ uploadId, sourceColumn, onStatsChange }: Email
             setLoading(false);
           }
         }
-      }
+      };
 
       // Only fetch if data is not already loaded for this column
       if (!data || config.column !== sourceColumn) {
