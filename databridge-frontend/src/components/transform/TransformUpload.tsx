@@ -517,6 +517,7 @@ export function TransformUpload() {
         filtersRef={filtersRef}
         totalRows={result?.totalRows ?? 0}
         previewRows={previewRows}
+        sourceColumns={result?.headers ?? []}
       />
     </div>
   );

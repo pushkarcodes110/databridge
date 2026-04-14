@@ -7,14 +7,18 @@ export type TransformMapping = {
 
 export type EmailFilterConfig = {
   column: string;
-  mode: "remove_invalid" | "keep_domain";
-  domain: string;
+  selectedDomains: string[];
+  fixCommonTypos: boolean;
+  removeInvalidFormat: boolean;
+  verifyMailboxExists: boolean;
+  normalizeLowercase: boolean;
+  typoRulesExpanded: boolean;
 };
 
 export type GenderFilterConfig = {
-  column: string;
-  allowedValues: string[];
-  normalizeValues: boolean;
+  nameColumn: string;
+  mode: "male" | "female" | "all";
+  addGenderColumn: boolean;
 };
 
 export type DedupeConfig = {
@@ -46,16 +50,20 @@ const defaultFilters: TransformFilters = {
     enabled: false,
     config: {
       column: "",
-      mode: "remove_invalid",
-      domain: "",
+      selectedDomains: [],
+      fixCommonTypos: true,
+      removeInvalidFormat: true,
+      verifyMailboxExists: false,
+      normalizeLowercase: true,
+      typoRulesExpanded: false,
     },
   },
   gender: {
     enabled: false,
     config: {
-      column: "",
-      allowedValues: ["female", "male", "non-binary"],
-      normalizeValues: true,
+      nameColumn: "",
+      mode: "all",
+      addGenderColumn: true,
     },
   },
   deduplication: {

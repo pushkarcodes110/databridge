@@ -1,7 +1,14 @@
 "use client";
 
-import { ReactNode, RefObject, useMemo } from "react";
-import { Mail, ScanSearch, UsersRound } from "lucide-react";
+import { ReactNode, RefObject, useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Mail, ScanSearch, UsersRound } from "lucide-react";
+import {
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+} from "recharts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -20,44 +27,90 @@ type FilterEstimate = {
 type FiltersSectionProps = {
   totalRows: number;
   previewRows: Record<string, string>[];
+  sourceColumns: string[];
   filtersRef: RefObject<HTMLDivElement>;
 };
 
+type EmailAnalysis = {
+  total: number;
+  breakdown: { domain: string; count: number; percentage: number }[];
+  invalidFormat: number;
+  emptyEmails: number;
+  duplicateEmails: number;
+};
+
+type GenderAnalysis = {
+  male: number;
+  female: number;
+  unknown: number;
+  sampleSize: number;
+};
+
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const freeProviders = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]);
+const chartColors = ["#0ea5e9", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#84cc16", "#06b6d4", "#a855f7", "#64748b"];
+
+const typoCorrections = [
+  ["gmal.com", "gmail.com"],
+  ["gmial.com", "gmail.com"],
+  ["gmail.co", "gmail.com"],
+  ["gmai.com", "gmail.com"],
+  ["yaho.com", "yahoo.com"],
+  ["yahoo.co", "yahoo.com"],
+  ["hotmial.com", "hotmail.com"],
+  ["hotmai.com", "hotmail.com"],
+  ["outlok.com", "outlook.com"],
+  ["outlook.co", "outlook.com"],
+];
 
 function estimateFromPreview(totalRows: number, previewRows: Record<string, string>[], removedPreviewRows: number) {
   if (totalRows === 0 || previewRows.length === 0 || removedPreviewRows === 0) return 0;
   return Math.min(totalRows, Math.round((removedPreviewRows / previewRows.length) * totalRows));
 }
 
+function getEmailDomain(value: string) {
+  const atIndex = value.lastIndexOf("@");
+  if (atIndex === -1) return "";
+  return value.slice(atIndex + 1).trim().toLowerCase();
+}
+
+function correctCommonTypo(email: string) {
+  const atIndex = email.lastIndexOf("@");
+  if (atIndex === -1) return email;
+
+  const localPart = email.slice(0, atIndex);
+  const domain = email.slice(atIndex + 1);
+  const correction = typoCorrections.find(([from]) => from === domain);
+  return correction ? `${localPart}@${correction[1]}` : email;
+}
+
+function normalizeEmailForFilter(value: string, filters: TransformFilters) {
+  let email = String(value ?? "").trim();
+  if (filters.email.config.normalizeLowercase) email = email.toLowerCase();
+  if (filters.email.config.fixCommonTypos) email = correctCommonTypo(email);
+  return email;
+}
+
 function estimateEmailRemoval(totalRows: number, previewRows: Record<string, string>[], filters: TransformFilters) {
-  const { column, mode, domain } = filters.email.config;
+  const { column, selectedDomains, removeInvalidFormat } = filters.email.config;
   if (!column) return 0;
 
-  const normalizedDomain = domain.trim().replace(/^@/, "").toLowerCase();
+  const selectedDomainSet = new Set(selectedDomains);
   const removedPreviewRows = previewRows.filter((row) => {
-    const value = String(row[column] ?? "").trim().toLowerCase();
-    if (mode === "keep_domain" && normalizedDomain) {
-      return !value.endsWith(`@${normalizedDomain}`);
-    }
-    return !emailPattern.test(value);
+    const value = normalizeEmailForFilter(String(row[column] ?? ""), filters);
+    if (!value) return removeInvalidFormat;
+    if (!emailPattern.test(value)) return removeInvalidFormat;
+
+    const domain = getEmailDomain(value);
+    return selectedDomainSet.size > 0 && !selectedDomainSet.has(domain);
   }).length;
 
   return estimateFromPreview(totalRows, previewRows, removedPreviewRows);
 }
 
 function estimateGenderRemoval(totalRows: number, previewRows: Record<string, string>[], filters: TransformFilters) {
-  const { column, allowedValues, normalizeValues } = filters.gender.config;
-  if (!column || allowedValues.length === 0) return 0;
-
-  const normalize = (value: string) => normalizeValues ? value.trim().toLowerCase() : value.trim();
-  const allowed = new Set(allowedValues.map(normalize).filter(Boolean));
-  const removedPreviewRows = previewRows.filter((row) => {
-    const value = normalize(String(row[column] ?? ""));
-    return !allowed.has(value);
-  }).length;
-
-  return estimateFromPreview(totalRows, previewRows, removedPreviewRows);
+  if (!filters.gender.config.nameColumn || filters.gender.config.mode === "all") return 0;
+  return estimateFromPreview(totalRows, previewRows, 0);
 }
 
 function estimateDedupeRemoval(totalRows: number, previewRows: Record<string, string>[], filters: TransformFilters) {
@@ -121,7 +174,7 @@ function FilterCard({
   children,
 }: {
   title: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   enabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
   miniStat: string;
@@ -172,6 +225,438 @@ function ColumnSelect({
   );
 }
 
+function GenderFilterConfigPanel({
+  sourceColumns,
+  enabled,
+}: {
+  sourceColumns: string[];
+  enabled: boolean;
+}) {
+  const uploadId = useTransformStore((state) => state.uploadId);
+  const genderConfig = useTransformStore((state) => state.filters.gender.config);
+  const setGenderConfig = useTransformStore((state) => state.setGenderConfig);
+  const [analysis, setAnalysis] = useState<GenderAnalysis | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!enabled || !uploadId || !genderConfig.nameColumn) {
+      setAnalysis(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setIsLoading(true);
+    setError("");
+
+    fetch("/api/transform/analyze/gender", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        uploadId,
+        nameColumn: genderConfig.nameColumn,
+        sampleSize: 200,
+      }),
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "Failed to analyze gender.");
+        return data as GenderAnalysis;
+      })
+      .then(setAnalysis)
+      .catch((fetchError) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        setError(fetchError instanceof Error ? fetchError.message : "Failed to analyze gender.");
+        setAnalysis(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [enabled, genderConfig.nameColumn, uploadId]);
+
+  return (
+    <div className="space-y-4">
+      <ColumnSelect
+        label="Name source column"
+        value={genderConfig.nameColumn}
+        onChange={(nameColumn) => setGenderConfig({ nameColumn })}
+        columns={sourceColumns}
+      />
+
+      <div className="space-y-2">
+        <div className="text-sm font-medium">Gender classification options</div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {[
+            { value: "male", label: "Male only" },
+            { value: "female", label: "Female only" },
+            { value: "all", label: "All" },
+          ].map((option) => (
+            <label key={option.value} className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={genderConfig.mode === option.value}
+                onChange={() => setGenderConfig({ mode: option.value as "male" | "female" | "all" })}
+                className="h-4 w-4 accent-primary"
+              />
+              {option.label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <label className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-3 text-sm">
+        <span>Add &apos;gender&apos; column to output</span>
+        <Switch
+          checked={genderConfig.addGenderColumn}
+          onCheckedChange={(addGenderColumn) => setGenderConfig({ addGenderColumn })}
+          aria-label="Add gender column to output"
+        />
+      </label>
+
+      {isLoading ? (
+        <div className="rounded-lg border p-4 text-sm text-muted-foreground">Analyzing first names from the sample...</div>
+      ) : null}
+
+      {error ? (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{error}</div>
+      ) : null}
+
+      {analysis ? (
+        <div className="rounded-lg border bg-background p-4 text-sm">
+          Estimated{" "}
+          <span className="font-semibold">{analysis.male.toLocaleString()} male</span>,{" "}
+          <span className="font-semibold">{analysis.female.toLocaleString()} female</span>,{" "}
+          <span className="font-semibold">{analysis.unknown.toLocaleString()} unknown</span>{" "}
+          from {analysis.sampleSize.toLocaleString()} sampled rows.
+        </div>
+      ) : null}
+
+      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+        Gender detection is based on first name analysis and may not be 100% accurate.
+      </div>
+    </div>
+  );
+}
+
+function buildChartData(breakdown: EmailAnalysis["breakdown"]) {
+  const top = breakdown.slice(0, 10);
+  const others = breakdown.slice(10).reduce((sum, item) => sum + item.count, 0);
+  return others > 0 ? [...top, { domain: "Others", count: others, percentage: 0 }] : top;
+}
+
+function ValidationOption({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start justify-between gap-4 rounded-lg border bg-background px-3 py-3 text-sm">
+      <span>
+        <span className="block font-medium">{label}</span>
+        {description ? <span className="mt-1 block text-xs text-muted-foreground">{description}</span> : null}
+      </span>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
+    </label>
+  );
+}
+
+function EmailFilterConfigPanel({
+  mappedColumns,
+  mapping,
+}: {
+  mappedColumns: string[];
+  mapping: TransformMapping[];
+}) {
+  const uploadId = useTransformStore((state) => state.uploadId);
+  const emailConfig = useTransformStore((state) => state.filters.email.config);
+  const setEmailConfig = useTransformStore((state) => state.setEmailConfig);
+  const [analysis, setAnalysis] = useState<EmailAnalysis | null>(null);
+  const [analysisKey, setAnalysisKey] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [domainSearch, setDomainSearch] = useState("");
+
+  const selectedMapping = useMemo(
+    () => mapping.find((item) => item.outputColumn === emailConfig.column),
+    [emailConfig.column, mapping]
+  );
+  const sourceColumn = selectedMapping?.sourceColumn ?? "";
+
+  useEffect(() => {
+    if (!uploadId || !sourceColumn) {
+      setAnalysis(null);
+      setAnalysisKey("");
+      return;
+    }
+
+    const key = `${uploadId}:${sourceColumn}`;
+    const controller = new AbortController();
+    setIsLoading(true);
+    setError("");
+
+    fetch(`/api/transform/analyze/email?uploadId=${encodeURIComponent(uploadId)}&sourceColumn=${encodeURIComponent(sourceColumn)}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "Failed to analyze email domains.");
+        return data as EmailAnalysis;
+      })
+      .then((data) => {
+        setAnalysis(data);
+        setAnalysisKey(key);
+        setEmailConfig({ selectedDomains: data.breakdown.map((item) => item.domain) });
+      })
+      .catch((fetchError) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        setError(fetchError instanceof Error ? fetchError.message : "Failed to analyze email domains.");
+        setAnalysis(null);
+        setAnalysisKey("");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [sourceColumn, setEmailConfig, uploadId]);
+
+  const chartData = useMemo(() => buildChartData(analysis?.breakdown ?? []), [analysis]);
+  const selectedDomainSet = useMemo(() => new Set(emailConfig.selectedDomains), [emailConfig.selectedDomains]);
+  const filteredDomains = useMemo(() => {
+    const query = domainSearch.trim().toLowerCase();
+    return (analysis?.breakdown ?? []).filter((item) => item.domain.includes(query));
+  }, [analysis, domainSearch]);
+  const keptEmails = useMemo(
+    () => (analysis?.breakdown ?? []).reduce((sum, item) => selectedDomainSet.has(item.domain) ? sum + item.count : sum, 0),
+    [analysis, selectedDomainSet]
+  );
+  const domainEmailTotal = useMemo(
+    () => (analysis?.breakdown ?? []).reduce((sum, item) => sum + item.count, 0),
+    [analysis]
+  );
+
+  const setDomainChecked = (domain: string, checked: boolean) => {
+    const next = checked
+      ? Array.from(new Set([...emailConfig.selectedDomains, domain]))
+      : emailConfig.selectedDomains.filter((item) => item !== domain);
+    setEmailConfig({ selectedDomains: next });
+  };
+
+  const allDomains = analysis?.breakdown.map((item) => item.domain) ?? [];
+
+  return (
+    <div className="space-y-5">
+      <ColumnSelect
+        label="Email column"
+        value={emailConfig.column}
+        onChange={(column) => setEmailConfig({ column, selectedDomains: [] })}
+        columns={mappedColumns}
+      />
+
+      {!emailConfig.column ? (
+        <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
+          Choose the mapped output column that contains email addresses.
+        </div>
+      ) : null}
+
+      {emailConfig.column && !sourceColumn ? (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+          This output column is not mapped to a source column yet.
+        </div>
+      ) : null}
+
+      {isLoading ? (
+        <div className="rounded-lg border p-6 text-sm text-muted-foreground">Analyzing email domains with a CSV stream...</div>
+      ) : null}
+
+      {error ? (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{error}</div>
+      ) : null}
+
+      {analysis ? (
+        <div className="space-y-5">
+          <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+            <div className="rounded-lg border bg-background p-4">
+              <div className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={chartData}
+                      dataKey="count"
+                      nameKey="domain"
+                      innerRadius={58}
+                      outerRadius={94}
+                      paddingAngle={2}
+                    >
+                      {chartData.map((entry, index) => (
+                        <Cell key={entry.domain} fill={chartColors[index % chartColors.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value, name) => [Number(value).toLocaleString(), name]} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded-lg bg-muted/40 p-3">
+                  <div className="text-lg font-semibold">{analysis.invalidFormat.toLocaleString()}</div>
+                  <div className="text-xs text-muted-foreground">Invalid format</div>
+                </div>
+                <div className="rounded-lg bg-muted/40 p-3">
+                  <div className="text-lg font-semibold">{analysis.emptyEmails.toLocaleString()}</div>
+                  <div className="text-xs text-muted-foreground">Empty emails</div>
+                </div>
+                <div className="rounded-lg bg-muted/40 p-3">
+                  <div className="text-lg font-semibold">{analysis.duplicateEmails.toLocaleString()}</div>
+                  <div className="text-xs text-muted-foreground">Duplicate emails</div>
+                </div>
+                <div className="rounded-lg bg-muted/40 p-3">
+                  <div className="text-lg font-semibold">{analysis.total.toLocaleString()}</div>
+                  <div className="text-xs text-muted-foreground">Rows analyzed</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-lg border bg-background p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="font-medium">Domain allowlist</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Keeping {keptEmails.toLocaleString()} of {domainEmailTotal.toLocaleString()} emails after domain filter.
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">Analysis source: {analysisKey || "current upload"}</div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEmailConfig({ selectedDomains: allDomains.filter((domain) => domain === "gmail.com") })}
+                  >
+                    Keep Gmail Only
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => setEmailConfig({ selectedDomains: allDomains })}>
+                    Keep All
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEmailConfig({ selectedDomains: allDomains.filter((domain) => !freeProviders.has(domain)) })}
+                  >
+                    Remove Free Providers
+                  </Button>
+                </div>
+              </div>
+
+              <input
+                value={domainSearch}
+                onChange={(event) => setDomainSearch(event.target.value)}
+                placeholder="Search domains"
+                className="mt-4 w-full rounded-lg border bg-card px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+              />
+
+              <div className="mt-4 max-h-[360px] overflow-auto rounded-lg border">
+                <table className="w-full text-left text-sm">
+                  <thead className="sticky top-0 bg-muted text-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Keep</th>
+                      <th className="px-3 py-2 font-medium">Domain</th>
+                      <th className="px-3 py-2 text-right font-medium">Count</th>
+                      <th className="px-3 py-2 text-right font-medium">Share</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredDomains.map((item) => (
+                      <tr key={item.domain} className="border-t">
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedDomainSet.has(item.domain)}
+                            onChange={(event) => setDomainChecked(item.domain, event.target.checked)}
+                            className="h-4 w-4 accent-primary"
+                            aria-label={`Keep ${item.domain}`}
+                          />
+                        </td>
+                        <td className="px-3 py-2 font-medium">{item.domain}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{item.count.toLocaleString()}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{item.percentage.toFixed(2)}%</td>
+                      </tr>
+                    ))}
+                    {filteredDomains.length === 0 ? (
+                      <tr>
+                        <td className="px-3 py-6 text-center text-muted-foreground" colSpan={4}>
+                          No domains match your search.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="text-sm font-semibold">Email Validation Options</div>
+            <div className="grid gap-3 lg:grid-cols-2">
+              <ValidationOption
+                label="Fix common typos"
+                checked={emailConfig.fixCommonTypos}
+                onCheckedChange={(fixCommonTypos) => setEmailConfig({ fixCommonTypos })}
+              />
+              <ValidationOption
+                label="Remove invalid format emails"
+                description="Removes values without an @ sign or top-level domain."
+                checked={emailConfig.removeInvalidFormat}
+                onCheckedChange={(removeInvalidFormat) => setEmailConfig({ removeInvalidFormat })}
+              />
+              <ValidationOption
+                label="Verify mailbox exists via API"
+                description="Uses reacher.email or MillionVerifier. This is slow for large files and costs API credits."
+                checked={emailConfig.verifyMailboxExists}
+                onCheckedChange={(verifyMailboxExists) => setEmailConfig({ verifyMailboxExists })}
+              />
+              <ValidationOption
+                label="Normalize emails to lowercase"
+                checked={emailConfig.normalizeLowercase}
+                onCheckedChange={(normalizeLowercase) => setEmailConfig({ normalizeLowercase })}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-lg border bg-background">
+            <button
+              type="button"
+              onClick={() => setEmailConfig({ typoRulesExpanded: !emailConfig.typoRulesExpanded })}
+              className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium"
+            >
+              <span>Typo Correction Rules</span>
+              {emailConfig.typoRulesExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            </button>
+            {emailConfig.typoRulesExpanded ? (
+              <div className="grid gap-2 border-t p-4 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                {typoCorrections.map(([from, to]) => (
+                  <div key={from} className="rounded-lg bg-muted/40 px-3 py-2">
+                    <span className="font-mono text-xs">{from}</span>
+                    <span className="px-2 text-muted-foreground">→</span>
+                    <span className="font-mono text-xs">{to}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DedupeColumnToggle({
   column,
   selected,
@@ -194,12 +679,10 @@ function DedupeColumnToggle({
   );
 }
 
-export function FiltersSection({ totalRows, previewRows, filtersRef }: FiltersSectionProps) {
+export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersRef }: FiltersSectionProps) {
   const mapping = useTransformStore((state) => state.mapping);
   const filters = useTransformStore((state) => state.filters);
   const setFilterEnabled = useTransformStore((state) => state.setFilterEnabled);
-  const setEmailConfig = useTransformStore((state) => state.setEmailConfig);
-  const setGenderConfig = useTransformStore((state) => state.setGenderConfig);
   const setDedupeConfig = useTransformStore((state) => state.setDedupeConfig);
   const estimate = useFilterEstimate(totalRows, previewRows, filters);
 
@@ -242,34 +725,7 @@ export function FiltersSection({ totalRows, previewRows, filtersRef }: FiltersSe
           onEnabledChange={(enabled) => setFilterEnabled("email", enabled)}
           miniStat={`Will remove ${estimate.email.toLocaleString()} rows`}
         >
-          <ColumnSelect
-            label="Email column"
-            value={filters.email.config.column}
-            onChange={(column) => setEmailConfig({ column })}
-            columns={mappedColumns}
-          />
-          <label className="block space-y-2 text-sm">
-            <span className="font-medium">Mode</span>
-            <select
-              value={filters.email.config.mode}
-              onChange={(event) => setEmailConfig({ mode: event.target.value as "remove_invalid" | "keep_domain" })}
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
-            >
-              <option value="remove_invalid">Remove invalid emails</option>
-              <option value="keep_domain">Keep only a domain</option>
-            </select>
-          </label>
-          {filters.email.config.mode === "keep_domain" ? (
-            <label className="block space-y-2 text-sm">
-              <span className="font-medium">Allowed domain</span>
-              <input
-                value={filters.email.config.domain}
-                onChange={(event) => setEmailConfig({ domain: event.target.value })}
-                placeholder="example.com"
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
-              />
-            </label>
-          ) : null}
+          <EmailFilterConfigPanel mappedColumns={mappedColumns} mapping={mapping} />
         </FilterCard>
 
         <FilterCard
@@ -279,31 +735,7 @@ export function FiltersSection({ totalRows, previewRows, filtersRef }: FiltersSe
           onEnabledChange={(enabled) => setFilterEnabled("gender", enabled)}
           miniStat={`Will remove ${estimate.gender.toLocaleString()} rows`}
         >
-          <ColumnSelect
-            label="Gender column"
-            value={filters.gender.config.column}
-            onChange={(column) => setGenderConfig({ column })}
-            columns={mappedColumns}
-          />
-          <label className="block space-y-2 text-sm">
-            <span className="font-medium">Allowed values</span>
-            <input
-              value={filters.gender.config.allowedValues.join(", ")}
-              onChange={(event) => setGenderConfig({
-                allowedValues: event.target.value.split(",").map((value) => value.trim()).filter(Boolean),
-              })}
-              placeholder="female, male, non-binary"
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
-            />
-          </label>
-          <label className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2 text-sm">
-            <span>Normalize values before matching</span>
-            <Switch
-              checked={filters.gender.config.normalizeValues}
-              onCheckedChange={(normalizeValues) => setGenderConfig({ normalizeValues })}
-              aria-label="Normalize gender values"
-            />
-          </label>
+          <GenderFilterConfigPanel sourceColumns={sourceColumns} enabled={filters.gender.enabled} />
         </FilterCard>
 
         <FilterCard

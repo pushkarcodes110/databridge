@@ -55,6 +55,14 @@ services:
       - db
       - redis
 
+  email-validator:
+    build: ../services/email-validator
+    ports:
+      - "8010:8010"
+    environment:
+      - ENVIRONMENT=development
+      - GENDERIZE_API_KEY=${GENDERIZE_API_KEY:-}
+
 volumes:
   postgres_data:
   redis_data:
