@@ -91,12 +91,26 @@ class NocoDBClient:
     async def bulk_insert(self, base_id: str, table_id: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
         if len(records) > 100:
             raise ValueError("NocoDB bulk insert hard limit is 100 records per request")
-            
+
         url = f"{self.base_url}/api/v1/db/data/bulk/noco/{base_id}/{table_id}"
-        
+        payloads = [
+            records,
+            [{"fields": record} for record in records],
+        ]
+
         async with self.semaphore:
-            response = await self.client.post(url, headers=self.headers, json=records)
-            if response.status_code not in [200, 201]:
-                # Log response for better debugging
-                raise Exception(f"Bulk insert failed: {response.status_code} - {response.text}")
-            return response.json()
+            last_error: Optional[str] = None
+
+            for payload in payloads:
+                response = await self.client.post(url, headers=self.headers, json=payload)
+                if response.status_code in [200, 201]:
+                    return response.json()
+
+                last_error = f"Bulk insert failed: {response.status_code} - {response.text}"
+
+                # If the endpoint exists but the payload shape is invalid, retry once
+                # with the alternate record shape used by newer NocoDB examples.
+                if response.status_code not in [400, 404, 422]:
+                    break
+
+            raise Exception(last_error or "Bulk insert failed for an unknown reason")

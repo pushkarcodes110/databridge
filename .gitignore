@@ -1,0 +1,36 @@
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage*
+htmlcov/
+venv/
+.venv/
+env/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Logs and local output
+*.log
+out.txt
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime uploads
+databridge-backend/uploads/
