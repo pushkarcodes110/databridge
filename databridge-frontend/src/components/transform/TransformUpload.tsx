@@ -20,7 +20,9 @@ import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { FiltersSection } from "@/components/transform/FiltersSection";
 import { cn } from "@/lib/utils";
+import { TransformMapping, useTransformStore } from "@/lib/transform-store";
 
 type UploadResult = {
   uploadId: string;
@@ -34,11 +36,6 @@ type UploadState = {
   fileSize: number;
   progress: number;
   status: "uploading" | "complete" | "error";
-};
-
-type Mapping = {
-  outputColumn: string;
-  sourceColumn: string;
 };
 
 type OutputColumnSlot = {
@@ -194,8 +191,10 @@ export function TransformUpload() {
   const [outputSlots, setOutputSlots] = useState<OutputColumnSlot[]>([]);
   const [newOutputColumn, setNewOutputColumn] = useState("");
   const [activeSourceColumn, setActiveSourceColumn] = useState<string | null>(null);
-  const [savedMapping, setSavedMapping] = useState<Mapping[]>([]);
-  const filtersRef = useRef<HTMLDivElement | null>(null);
+  const filtersRef = useRef<HTMLDivElement>(null);
+  const setUploadId = useTransformStore((state) => state.setUploadId);
+  const setTransformMapping = useTransformStore((state) => state.setMapping);
+  const resetTransform = useTransformStore((state) => state.resetTransform);
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
@@ -203,8 +202,8 @@ export function TransformUpload() {
 
     setResult(null);
     setOutputSlots([]);
-    setSavedMapping([]);
     setNewOutputColumn("");
+    resetTransform();
     setUploadState({
       fileName: file.name,
       fileSize: file.size,
@@ -217,6 +216,7 @@ export function TransformUpload() {
         setUploadState((current) => current ? { ...current, progress } : current);
       });
       setResult(data);
+      setUploadId(data.uploadId);
       setUploadState((current) => current ? { ...current, progress: 100, status: "complete" } : current);
       toast.success("CSV uploaded successfully.");
     } catch (error) {
@@ -224,7 +224,7 @@ export function TransformUpload() {
       setUploadState((current) => current ? { ...current, status: "error" } : current);
       toast.error(message);
     }
-  }, []);
+  }, [resetTransform, setUploadId]);
 
   const { getRootProps, getInputProps, isDragActive, isDragReject } = useDropzone({
     onDrop,
@@ -243,7 +243,7 @@ export function TransformUpload() {
     return "Uploading";
   }, [uploadState]);
 
-  const mapping = useMemo<Mapping[]>(
+  const mapping = useMemo<TransformMapping[]>(
     () => outputSlots
       .filter((slot) => slot.sourceColumn && slot.outputColumn.trim())
       .map((slot) => ({
@@ -319,11 +319,11 @@ export function TransformUpload() {
   }, []);
 
   const handleNext = useCallback(() => {
-    setSavedMapping(mapping);
+    setTransformMapping(mapping);
     requestAnimationFrame(() => {
       filtersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
-  }, [mapping]);
+  }, [mapping, setTransformMapping]);
 
   return (
     <div className="space-y-6">
@@ -513,14 +513,11 @@ export function TransformUpload() {
         </Card>
       ) : null}
 
-      <div ref={filtersRef} className="scroll-mt-8 rounded-lg border bg-card p-6">
-        <h2 className="text-lg font-semibold">Filters</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {savedMapping.length > 0
-            ? `${savedMapping.length} mapped column${savedMapping.length === 1 ? "" : "s"} ready for filters.`
-            : "Apply at least one mapping before configuring filters."}
-        </p>
-      </div>
+      <FiltersSection
+        filtersRef={filtersRef}
+        totalRows={result?.totalRows ?? 0}
+        previewRows={previewRows}
+      />
     </div>
   );
 }
