@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import asyncio
 import os
 import random
 import string
 from enum import Enum
-from typing import Literal
+from typing import Literal, Optional
 
 import dns.asyncresolver
 import gender_guesser.detector as gender_detector
@@ -115,7 +117,7 @@ class ValidateEmailsRequest(BaseModel):
 
 class EmailValidationResult(BaseModel):
     original: str
-    cleaned: str | None
+    cleaned: Optional[str]
     status: Literal["valid", "invalid", "typo_fixed", "undeliverable", "unknown"]
     reason: str
 
@@ -168,7 +170,7 @@ def edit_distance(left: str, right: str) -> int:
     return previous[-1]
 
 
-def correct_domain_typos(email: str) -> tuple[str, bool, str | None]:
+def correct_domain_typos(email: str) -> tuple[str, bool, Optional[str]]:
     if "@" not in email:
         return email, False, None
 
@@ -188,7 +190,7 @@ def correct_domain_typos(email: str) -> tuple[str, bool, str | None]:
     return email, False, None
 
 
-def validate_format(email: str) -> tuple[str | None, str | None]:
+def validate_format(email: str) -> tuple[Optional[str], Optional[str]]:
     try:
         validation = validate_email(email, check_deliverability=False)
         return validation.normalized, None
@@ -206,7 +208,7 @@ async def mx_hosts(domain: str) -> list[str]:
     return [str(record.exchange).rstrip(".") for record in records]
 
 
-async def read_smtp_response(reader: asyncio.StreamReader) -> tuple[int | None, str]:
+async def read_smtp_response(reader: asyncio.StreamReader) -> tuple[Optional[int], str]:
     lines: list[str] = []
 
     while True:
@@ -226,7 +228,7 @@ async def read_smtp_response(reader: asyncio.StreamReader) -> tuple[int | None, 
     return int(code_text) if code_text.isdigit() else None, " ".join(lines)
 
 
-async def smtp_command(writer: asyncio.StreamWriter, reader: asyncio.StreamReader, command: str) -> tuple[int | None, str]:
+async def smtp_command(writer: asyncio.StreamWriter, reader: asyncio.StreamReader, command: str) -> tuple[Optional[int], str]:
     writer.write(command.encode("utf-8"))
     await asyncio.wait_for(writer.drain(), timeout=5)
     return await read_smtp_response(reader)
@@ -299,7 +301,7 @@ async def smtp_mailbox_check(email: str, hosts: list[str]) -> tuple[ValidationSt
     domain = email.rsplit("@", 1)[1]
 
     for host in hosts[:3]:
-        writer: asyncio.StreamWriter | None = None
+        writer: Optional[asyncio.StreamWriter] = None
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_connection(host, 25), timeout=5)
             code, _message = await read_smtp_response(reader)

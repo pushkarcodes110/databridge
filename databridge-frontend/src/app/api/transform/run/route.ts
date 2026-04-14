@@ -63,9 +63,10 @@ type RunStats = {
   maleCount: number;
   femaleCount: number;
   unknownCount: number;
+  skippedRows: number;
 };
 
-const serviceUrl = process.env.EMAIL_VALIDATOR_URL || "http://localhost:8010";
+const serviceUrl = process.env.EMAIL_VALIDATOR_URL || "http://localhost:8001";
 
 function csvEscape(value: unknown) {
   const text = String(value ?? "");
@@ -131,6 +132,10 @@ function makeAsyncRowTransform(handleRow: (row: Row) => Promise<Row | Row[] | nu
   });
 }
 
+function isPlainRow(row: unknown): row is Row {
+  return Boolean(row && typeof row === "object" && !Array.isArray(row));
+}
+
 function makeBatchTransform(
   batchSize: number,
   processBatch: (rows: Row[]) => Promise<Row[]>,
@@ -183,6 +188,12 @@ async function mapColumns(config: TransformConfig, inputPath: string, outputPath
     createReadStream(inputPath),
     csv(),
     makeAsyncRowTransform(async (row) => {
+      if (!isPlainRow(row)) {
+        stats.skippedRows += 1;
+        console.warn("Skipping malformed CSV row during mapping.", row);
+        return null;
+      }
+
       rowsProcessed += 1;
       stats.inputRows += 1;
       if (rowsProcessed % 500 === 0) {
@@ -322,27 +333,31 @@ async function deduplicate(config: TransformConfig, inputPath: string, outputPat
 }
 
 async function validateEmailBatch(emails: string[], config: TransformConfig) {
-  const response = await fetch(`${serviceUrl}/validate-emails`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      emails,
-      options: {
-        fixTypos: config.filters.email.config.fixCommonTypos,
-        removeInvalid: config.filters.email.config.removeInvalidFormat,
-        verifyMailbox: config.filters.email.config.verifyMailboxExists,
-        normalize: config.filters.email.config.normalizeLowercase,
-      },
-    }),
-  });
+  try {
+    const response = await fetch(`${serviceUrl}/validate-emails`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        emails,
+        options: {
+          fixTypos: config.filters.email.config.fixCommonTypos,
+          removeInvalid: config.filters.email.config.removeInvalidFormat,
+          verifyMailbox: config.filters.email.config.verifyMailboxExists,
+          normalize: config.filters.email.config.normalizeLowercase,
+        },
+      }),
+    });
 
-  if (!response.ok) throw new Error("Email validation service failed.");
-  return response.json() as Promise<{
-    results: Array<{
-      cleaned: string | null;
-      status: "valid" | "invalid" | "typo_fixed" | "undeliverable" | "unknown";
+    if (!response.ok) throw new Error("Email validation service failed.");
+    return response.json() as Promise<{
+      results: Array<{
+        cleaned: string | null;
+        status: "valid" | "invalid" | "typo_fixed" | "undeliverable" | "unknown";
+      }>;
     }>;
-  }>;
+  } catch {
+    return null;
+  }
 }
 
 async function cleanEmails(config: TransformConfig, inputPath: string, outputPath: string, headers: string[], emit: (event: object) => void, stats: RunStats) {
@@ -355,12 +370,20 @@ async function cleanEmails(config: TransformConfig, inputPath: string, outputPat
   const emailColumn = config.filters.email.config.column;
   const selectedDomains = new Set(config.filters.email.config.selectedDomains);
   let rowsProcessed = 0;
+  let serviceWarningEmitted = false;
 
   await pipeline(
     createReadStream(inputPath),
     csv(),
     makeBatchTransform(500, async (rows) => {
       const validation = await validateEmailBatch(rows.map((row) => row[emailColumn] ?? ""), config);
+      if (!validation) {
+        if (!serviceWarningEmitted) {
+          emit({ step: "email", warning: "Email validation service unreachable. Skipping email cleaning filter." });
+          serviceWarningEmitted = true;
+        }
+        return rows;
+      }
       const outputRows: Row[] = [];
 
       rows.forEach((row, index) => {
@@ -409,16 +432,20 @@ async function cleanEmails(config: TransformConfig, inputPath: string, outputPat
 }
 
 async function classifyGenderBatch(names: string[]) {
-  const response = await fetch(`${serviceUrl}/classify-gender`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ names }),
-  });
+  try {
+    const response = await fetch(`${serviceUrl}/classify-gender`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ names }),
+    });
 
-  if (!response.ok) throw new Error("Gender classification service failed.");
-  return response.json() as Promise<{
-    results: Array<{ gender: "male" | "female" | "unknown"; confidence: number }>;
-  }>;
+    if (!response.ok) throw new Error("Gender classification service failed.");
+    return response.json() as Promise<{
+      results: Array<{ gender: "male" | "female" | "unknown"; confidence: number }>;
+    }>;
+  } catch {
+    return null;
+  }
 }
 
 async function classifyGender(config: TransformConfig, inputPath: string, outputPath: string, headers: string[], emit: (event: object) => void, stats: RunStats) {
@@ -431,12 +458,20 @@ async function classifyGender(config: TransformConfig, inputPath: string, output
   const nameColumn = mappedColumnForSource(config, config.filters.gender.config.nameColumn);
   const outputHeaders = config.filters.gender.config.addGenderColumn && !headers.includes("gender") ? [...headers, "gender"] : headers;
   let rowsProcessed = 0;
+  let serviceWarningEmitted = false;
 
   await pipeline(
     createReadStream(inputPath),
     csv(),
     makeBatchTransform(500, async (rows) => {
       const classification = await classifyGenderBatch(rows.map((row) => row[nameColumn] ?? ""));
+      if (!classification) {
+        if (!serviceWarningEmitted) {
+          emit({ step: "gender", warning: "Gender service unreachable. Skipping gender filter." });
+          serviceWarningEmitted = true;
+        }
+        return rows;
+      }
       const outputRows: Row[] = [];
 
       rows.forEach((row, index) => {
@@ -510,6 +545,7 @@ async function runTransform(config: TransformConfig, emit: (event: object) => vo
     maleCount: 0,
     femaleCount: 0,
     unknownCount: 0,
+    skippedRows: 0,
   };
 
   emit({ step: "mapping", progress: 0, rowsProcessed: 0 });

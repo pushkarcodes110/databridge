@@ -314,6 +314,12 @@ export function TransformUpload() {
     )));
   }, []);
 
+  const setSlotSource = useCallback((id: string, sourceColumn: string) => {
+    setOutputSlots((current) => current.map((slot) => (
+      slot.id === id ? { ...slot, sourceColumn: sourceColumn || null } : slot
+    )));
+  }, []);
+
   const removeSlot = useCallback((id: string) => {
     setOutputSlots((current) => current.filter((slot) => slot.id !== id));
   }, []);
@@ -396,7 +402,72 @@ export function TransformUpload() {
               </div>
             </div>
 
-            <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+            <div className="space-y-4 md:hidden">
+              <section className="rounded-lg border bg-muted/20 p-4">
+                <h2 className="text-sm font-semibold">Output Schema Builder</h2>
+                <p className="mt-1 text-xs text-muted-foreground">Choose source columns from the dropdowns below.</p>
+                <form onSubmit={addOutputColumn} className="mt-4 flex flex-col gap-2">
+                  <input
+                    value={newOutputColumn}
+                    onChange={(event) => setNewOutputColumn(event.target.value)}
+                    placeholder="New output column"
+                    className="rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+                  />
+                  <Button type="submit" disabled={!newOutputColumn.trim()}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add Column
+                  </Button>
+                </form>
+
+                <div className="mt-4 space-y-3">
+                  {outputSlots.length === 0 ? (
+                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                      Add an output column to create a mapping slot.
+                    </div>
+                  ) : (
+                    outputSlots.map((slot) => (
+                      <div key={slot.id} className="space-y-3 rounded-lg border bg-background p-4">
+                        <input
+                          value={slot.outputColumn}
+                          onChange={(event) => renameOutputColumn(slot.id, event.target.value)}
+                          className="w-full rounded-lg border bg-card px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+                          aria-label="Output column name"
+                        />
+                        <select
+                          value={slot.sourceColumn ?? ""}
+                          onChange={(event) => setSlotSource(slot.id, event.target.value)}
+                          className="w-full rounded-lg border bg-card px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+                          aria-label={`Source column for ${slot.outputColumn}`}
+                        >
+                          <option value="">Choose source column</option>
+                          {result.headers.map((header) => (
+                            <option key={header} value={header}>{header}</option>
+                          ))}
+                        </select>
+                        {slot.sourceColumn ? (
+                          <div className="rounded-lg bg-muted px-3 py-2 text-sm">
+                            <span className="font-medium">{slot.outputColumn || "Untitled"}</span>
+                            <span className="px-2 text-muted-foreground">←</span>
+                            <span className="text-muted-foreground">{slot.sourceColumn}</span>
+                          </div>
+                        ) : null}
+                        <div className="flex gap-2">
+                          <Button type="button" variant="outline" onClick={() => clearMapping(slot.id)} disabled={!slot.sourceColumn}>
+                            Clear
+                          </Button>
+                          <Button type="button" variant="outline" onClick={() => removeSlot(slot.id)}>
+                            Remove
+                          </Button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            </div>
+
+            <div className="hidden md:block">
+              <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
               <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
                 <section className="rounded-lg border bg-muted/20 p-4">
                   <h2 className="text-sm font-semibold">Source Columns</h2>
@@ -457,7 +528,8 @@ export function TransformUpload() {
                   </div>
                 ) : null}
               </DragOverlay>
-            </DndContext>
+              </DndContext>
+            </div>
 
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -518,6 +590,7 @@ export function TransformUpload() {
         totalRows={result?.totalRows ?? 0}
         previewRows={previewRows}
         sourceColumns={result?.headers ?? []}
+        inputFile={uploadState?.fileName ?? ""}
       />
     </div>
   );

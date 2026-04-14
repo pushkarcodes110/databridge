@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from "recharts";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -28,6 +29,7 @@ type FiltersSectionProps = {
   totalRows: number;
   previewRows: Record<string, string>[];
   sourceColumns: string[];
+  inputFile: string;
   filtersRef: RefObject<HTMLDivElement>;
 };
 
@@ -64,6 +66,7 @@ type RunStats = {
   maleCount: number;
   femaleCount: number;
   unknownCount: number;
+  skippedRows: number;
 };
 
 type RunEvent = {
@@ -72,6 +75,7 @@ type RunEvent = {
   rowsProcessed?: number;
   outputFile?: string;
   error?: string;
+  warning?: string;
   stats?: RunStats;
   rowsRemovedFullDupe?: number;
   rowsRemovedEmailDupe?: number;
@@ -83,9 +87,19 @@ type RunEvent = {
   unknownCount?: number;
 };
 
+type TransformHistoryEntry = {
+  date: string;
+  inputFile: string;
+  outputRows: number;
+  inputRows: number;
+  filtersApplied: string[];
+  outputFile?: string;
+};
+
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const freeProviders = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]);
 const chartColors = ["#0ea5e9", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#84cc16", "#06b6d4", "#a855f7", "#64748b"];
+const historyStorageKey = "databridge-transform-history";
 
 const typoCorrections = [
   ["gmal.com", "gmail.com"],
@@ -212,11 +226,35 @@ function useFilterEstimate(totalRows: number, previewRows: Record<string, string
 
 function StatCard({ label, value }: { label: string; value: number }) {
   return (
-    <div className="min-w-[160px] flex-1 rounded-lg border bg-background p-4">
+    <div className="min-w-[160px] shrink-0 flex-1 rounded-lg border bg-background p-4">
       <div className="text-2xl font-bold tabular-nums">{value.toLocaleString()}</div>
       <div className="mt-1 text-xs font-medium uppercase text-muted-foreground">{label}</div>
     </div>
   );
+}
+
+function AnalysisSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="space-y-3 rounded-lg border bg-background p-4" aria-label="Loading analysis">
+      {Array.from({ length: rows }).map((_, index) => (
+        <div key={index} className="flex animate-pulse items-center gap-3">
+          <div className="h-8 w-8 rounded-lg bg-muted" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="h-3 w-2/3 rounded bg-muted" />
+            <div className="h-3 w-1/3 rounded bg-muted" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function filtersAppliedLabel(filters: TransformFilters) {
+  const applied: string[] = [];
+  if (filters.email.enabled) applied.push("Email Filter");
+  if (filters.gender.enabled) applied.push("Gender Filter");
+  if (filters.deduplication.enabled) applied.push("Duplicate Remover");
+  return applied;
 }
 
 function FilterCard({
@@ -371,7 +409,7 @@ function GenderFilterConfigPanel({
       </label>
 
       {isLoading ? (
-        <div className="rounded-lg border p-4 text-sm text-muted-foreground">Analyzing first names from the sample...</div>
+        <AnalysisSkeleton rows={2} />
       ) : null}
 
       {error ? (
@@ -529,7 +567,7 @@ function EmailFilterConfigPanel({
       ) : null}
 
       {isLoading ? (
-        <div className="rounded-lg border p-6 text-sm text-muted-foreground">Analyzing email domains with a CSV stream...</div>
+        <AnalysisSkeleton rows={4} />
       ) : null}
 
       {error ? (
@@ -831,7 +869,7 @@ function DuplicateRemoverConfigPanel({
       </div>
 
       {isLoading ? (
-        <div className="rounded-lg border p-4 text-sm text-muted-foreground">Scanning duplicate rows with a stream...</div>
+        <AnalysisSkeleton rows={2} />
       ) : null}
 
       {error ? (
@@ -924,6 +962,12 @@ function ProcessingModal({
           <StatCard label="Unknown" value={stats?.unknownCount ?? event?.unknownCount ?? 0} />
         </div>
 
+        {stats ? (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard label="Skipped Rows" value={stats.skippedRows} />
+          </div>
+        ) : null}
+
         {isError ? (
           <div className="mt-6 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
             {event?.error || "Transform failed."}
@@ -955,7 +999,7 @@ function ProcessingModal({
   );
 }
 
-export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersRef }: FiltersSectionProps) {
+export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFile, filtersRef }: FiltersSectionProps) {
   const mapping = useTransformStore((state) => state.mapping);
   const filters = useTransformStore((state) => state.filters);
   const setFilterEnabled = useTransformStore((state) => state.setFilterEnabled);
@@ -963,6 +1007,16 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersR
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [runEvents, setRunEvents] = useState<RunEvent[]>([]);
   const [latestRunEvent, setLatestRunEvent] = useState<RunEvent | null>(null);
+  const [history, setHistory] = useState<TransformHistoryEntry[]>([]);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(historyStorageKey);
+      if (stored) setHistory(JSON.parse(stored) as TransformHistoryEntry[]);
+    } catch {
+      setHistory([]);
+    }
+  }, []);
 
   const mappedColumns = useMemo(
     () => mapping.map((item: TransformMapping) => item.outputColumn),
@@ -971,8 +1025,17 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersR
 
   const runDisabled = mapping.length === 0;
 
+  const saveHistoryEntry = (entry: TransformHistoryEntry) => {
+    setHistory((current) => {
+      const next = [entry, ...current].slice(0, 10);
+      window.localStorage.setItem(historyStorageKey, JSON.stringify(next));
+      return next;
+    });
+  };
+
   const handleRunTransform = async () => {
     const state = useTransformStore.getState();
+    const filtersApplied = filtersAppliedLabel(state.filters);
     setRunModalOpen(true);
     setRunEvents([]);
     setLatestRunEvent({ step: "starting", progress: 0 });
@@ -1007,6 +1070,17 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersR
           const line = rawEvent.split("\n").find((item) => item.startsWith("data: "));
           if (!line) return;
           const parsed = JSON.parse(line.slice("data: ".length)) as RunEvent;
+          if (parsed.warning) toast.warning(parsed.warning);
+          if (parsed.step === "complete" && parsed.stats) {
+            saveHistoryEntry({
+              date: new Date().toISOString(),
+              inputFile: inputFile || "Uploaded CSV",
+              outputRows: parsed.stats.outputRows,
+              inputRows: parsed.stats.inputRows,
+              filtersApplied,
+              outputFile: parsed.outputFile,
+            });
+          }
           setLatestRunEvent(parsed);
           setRunEvents((current) => [...current, parsed]);
         });
@@ -1036,7 +1110,7 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersR
             <p className="mt-1 text-sm text-muted-foreground">Configure row filters before running the transform.</p>
           </div>
         </div>
-        <div className="flex flex-col gap-3 lg:flex-row">
+        <div className="flex gap-3 overflow-x-auto pb-2">
           <StatCard label="Total Rows" value={totalRows} />
           <StatCard label="Rows Remaining" value={estimate.rowsRemaining} />
           <StatCard label="Rows Removed" value={estimate.totalRemoved} />
@@ -1079,6 +1153,41 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersR
       <Button size="lg" className="h-12 w-full text-base" disabled={runDisabled} onClick={handleRunTransform}>
         Run Transform
       </Button>
+
+      <Card className="rounded-lg">
+        <CardHeader>
+          <CardTitle>Transform History</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {history.length > 0 ? (
+            <div className="space-y-3">
+              {history.map((entry) => (
+                <div key={`${entry.date}-${entry.inputFile}`} className="flex flex-col gap-3 rounded-lg border bg-background p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">{entry.inputFile}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {new Date(entry.date).toLocaleString()} · {entry.outputRows.toLocaleString()} of {entry.inputRows.toLocaleString()} rows kept
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {entry.filtersApplied.length > 0 ? entry.filtersApplied.join(", ") : "No filters applied"}
+                    </div>
+                  </div>
+                  {entry.outputFile ? (
+                    <Button type="button" variant="outline" onClick={() => window.location.assign(entry.outputFile as string)}>
+                      <Download className="mr-2 h-4 w-4" />
+                      Download
+                    </Button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
+              Completed transforms will appear here.
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </section>
   );
 }

@@ -24,6 +24,7 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
+      - /tmp/databridge:/tmp/databridge
     ports:
       - "8000:8000"
     environment:
@@ -35,6 +36,7 @@ services:
       - CELERY_CONCURRENCY=5
       - CORS_ORIGINS=http://localhost:3000
       - MAX_UPLOAD_SIZE_MB=500
+      - EMAIL_VALIDATOR_URL=http://email-validator:8001
     depends_on:
       - db
       - redis
@@ -44,6 +46,7 @@ services:
     command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=5
     volumes:
       - .:/app
+      - /tmp/databridge:/tmp/databridge
     environment:
       - DATABASE_URL=postgresql://user:pushkar@db:5432/databridge
       - REDIS_URL=redis://redis:6379/0
@@ -51,6 +54,7 @@ services:
       - UPLOAD_DIR=/app/uploads
       - ENCRYPTION_KEY=supersecretkey-change-me-in-production=
       - CELERY_CONCURRENCY=5
+      - EMAIL_VALIDATOR_URL=http://email-validator:8001
     depends_on:
       - db
       - redis
@@ -58,7 +62,9 @@ services:
   email-validator:
     build: ../services/email-validator
     ports:
-      - "8010:8010"
+      - "8001:8001"
+    volumes:
+      - /tmp/databridge:/tmp/databridge
     environment:
       - ENVIRONMENT=development
       - GENDERIZE_API_KEY=${GENDERIZE_API_KEY:-}

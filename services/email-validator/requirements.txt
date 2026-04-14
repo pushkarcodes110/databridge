@@ -7,3 +7,4 @@ python-Levenshtein==0.26.1
 pydantic==2.10.5
 gender-guesser==0.4.0
 httpx==0.28.1
+pytest==8.3.4

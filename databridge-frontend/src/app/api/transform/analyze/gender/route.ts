@@ -22,7 +22,7 @@ type GenderServiceResponse = {
   }>;
 };
 
-const genderServiceUrl = process.env.GENDER_SERVICE_URL || process.env.EMAIL_VALIDATOR_URL || "http://localhost:8010";
+const genderServiceUrl = process.env.GENDER_SERVICE_URL || process.env.EMAIL_VALIDATOR_URL || "http://localhost:8001";
 
 function firstNameFromValue(value: string) {
   return value.trim().split(/[\s-]+/)[0] || "";

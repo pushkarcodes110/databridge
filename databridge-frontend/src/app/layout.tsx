@@ -4,6 +4,7 @@ import "./globals.css";
 import Link from "next/link";
 import { Activity, Database, Filter, Settings } from "lucide-react";
 import { Toaster } from "sonner";
+import { CleanupScheduler } from "@/components/transform/CleanupScheduler";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -48,6 +49,7 @@ export default function RootLayout({
             {children}
           </div>
         </main>
+        <CleanupScheduler />
         <Toaster richColors position="top-right" />
       </body>
     </html>
