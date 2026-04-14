@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
-import { Database, Settings, Activity } from "lucide-react";
+import { Activity, Database, Filter, Settings } from "lucide-react";
+import { Toaster } from "sonner";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -32,6 +33,9 @@ export default function RootLayout({
             <Link href="/jobs" className="flex items-center px-4 py-3 rounded-xl hover:bg-primary/10 transition-colors text-sm font-medium">
               <Activity className="w-4 h-4 mr-3" /> Job History
             </Link>
+            <Link href="/transform" className="flex items-center px-4 py-3 rounded-xl hover:bg-primary/10 transition-colors text-sm font-medium">
+              <Filter className="w-4 h-4 mr-3" /> Transform
+            </Link>
             <Link href="/settings" className="flex items-center px-4 py-3 rounded-xl hover:bg-primary/10 transition-colors text-sm font-medium">
               <Settings className="w-4 h-4 mr-3" /> Settings
             </Link>
@@ -44,6 +48,7 @@ export default function RootLayout({
             {children}
           </div>
         </main>
+        <Toaster richColors position="top-right" />
       </body>
     </html>
   );
