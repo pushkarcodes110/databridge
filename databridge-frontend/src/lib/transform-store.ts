@@ -22,7 +22,9 @@ export type GenderFilterConfig = {
 };
 
 export type DedupeConfig = {
-  columns: string[];
+  removeFullDuplicates: boolean;
+  removeDuplicateEmails: boolean;
+  emailColumn: string;
   strategy: "first" | "last";
 };
 
@@ -69,7 +71,9 @@ const defaultFilters: TransformFilters = {
   deduplication: {
     enabled: false,
     config: {
-      columns: [],
+      removeFullDuplicates: true,
+      removeDuplicateEmails: false,
+      emailColumn: "",
       strategy: "first",
     },
   },

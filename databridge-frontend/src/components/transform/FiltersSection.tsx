@@ -46,6 +46,12 @@ type GenderAnalysis = {
   sampleSize: number;
 };
 
+type DuplicateAnalysis = {
+  fullDuplicates: number;
+  emailDuplicates: number;
+  totalRows: number;
+};
+
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const freeProviders = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]);
 const chartColors = ["#0ea5e9", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#84cc16", "#06b6d4", "#a855f7", "#64748b"];
@@ -114,19 +120,36 @@ function estimateGenderRemoval(totalRows: number, previewRows: Record<string, st
 }
 
 function estimateDedupeRemoval(totalRows: number, previewRows: Record<string, string>[], filters: TransformFilters) {
-  const { columns } = filters.deduplication.config;
-  if (columns.length === 0) return 0;
+  if (!filters.deduplication.config.removeFullDuplicates && !filters.deduplication.config.removeDuplicateEmails) return 0;
 
-  const seen = new Set<string>();
+  const seenRows = new Set<string>();
+  const seenEmails = new Set<string>();
   let duplicates = 0;
 
   previewRows.forEach((row) => {
-    const key = columns.map((column) => String(row[column] ?? "").trim().toLowerCase()).join("::");
-    if (seen.has(key)) {
-      duplicates += 1;
-      return;
+    let isDuplicate = false;
+
+    if (filters.deduplication.config.removeFullDuplicates) {
+      const rowKey = JSON.stringify(row);
+      if (seenRows.has(rowKey)) {
+        isDuplicate = true;
+      } else {
+        seenRows.add(rowKey);
+      }
     }
-    seen.add(key);
+
+    if (filters.deduplication.config.removeDuplicateEmails && filters.deduplication.config.emailColumn) {
+      const email = String(row[filters.deduplication.config.emailColumn] ?? "").trim().toLowerCase();
+      if (email) {
+        if (seenEmails.has(email)) {
+          isDuplicate = true;
+        } else {
+          seenEmails.add(email);
+        }
+      }
+    }
+
+    if (isDuplicate) duplicates += 1;
   });
 
   return estimateFromPreview(totalRows, previewRows, duplicates);
@@ -658,24 +681,150 @@ function EmailFilterConfigPanel({
 }
 
 function DedupeColumnToggle({
-  column,
-  selected,
-  onToggle,
+  label,
+  description,
+  checked,
+  onCheckedChange,
 }: {
-  column: string;
-  selected: boolean;
-  onToggle: (column: string, selected: boolean) => void;
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-sm">
-      <input
-        type="checkbox"
-        checked={selected}
-        onChange={(event) => onToggle(column, event.target.checked)}
-        className="h-4 w-4 accent-primary"
-      />
-      <span className="min-w-0 truncate">{column}</span>
+    <label className="flex items-start justify-between gap-4 rounded-lg border bg-background px-3 py-3 text-sm">
+      <span>
+        <span className="block font-medium">{label}</span>
+        <span className="mt-1 block text-xs text-muted-foreground">{description}</span>
+      </span>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
     </label>
+  );
+}
+
+function DuplicateRemoverConfigPanel({
+  sourceColumns,
+  enabled,
+}: {
+  sourceColumns: string[];
+  enabled: boolean;
+}) {
+  const uploadId = useTransformStore((state) => state.uploadId);
+  const emailConfig = useTransformStore((state) => state.filters.email.config);
+  const dedupeConfig = useTransformStore((state) => state.filters.deduplication.config);
+  const setDedupeConfig = useTransformStore((state) => state.setDedupeConfig);
+  const [analysis, setAnalysis] = useState<DuplicateAnalysis | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const guessedEmailColumn = useMemo(() => {
+    if (dedupeConfig.emailColumn) return dedupeConfig.emailColumn;
+    if (emailConfig.column && sourceColumns.includes(emailConfig.column)) return emailConfig.column;
+    return sourceColumns.find((column) => column.toLowerCase().includes("email")) ?? "";
+  }, [dedupeConfig.emailColumn, emailConfig.column, sourceColumns]);
+
+  useEffect(() => {
+    if (!dedupeConfig.emailColumn && guessedEmailColumn) {
+      setDedupeConfig({ emailColumn: guessedEmailColumn });
+    }
+  }, [dedupeConfig.emailColumn, guessedEmailColumn, setDedupeConfig]);
+
+  useEffect(() => {
+    if (!enabled || !uploadId || !dedupeConfig.emailColumn) {
+      setAnalysis(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setIsLoading(true);
+    setError("");
+
+    fetch(`/api/transform/analyze/duplicates?uploadId=${encodeURIComponent(uploadId)}&emailColumn=${encodeURIComponent(dedupeConfig.emailColumn)}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "Failed to analyze duplicates.");
+        return data as DuplicateAnalysis;
+      })
+      .then(setAnalysis)
+      .catch((fetchError) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        setError(fetchError instanceof Error ? fetchError.message : "Failed to analyze duplicates.");
+        setAnalysis(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [dedupeConfig.emailColumn, enabled, uploadId]);
+
+  return (
+    <div className="space-y-4">
+      <ColumnSelect
+        label="Email source column"
+        value={dedupeConfig.emailColumn}
+        onChange={(emailColumn) => setDedupeConfig({ emailColumn })}
+        columns={sourceColumns}
+      />
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <DedupeColumnToggle
+          label="Remove fully duplicate rows"
+          description="The entire row must match."
+          checked={dedupeConfig.removeFullDuplicates}
+          onCheckedChange={(removeFullDuplicates) => setDedupeConfig({ removeFullDuplicates })}
+        />
+        <DedupeColumnToggle
+          label="Remove rows with duplicate emails"
+          description="Duplicate email values keep only one occurrence."
+          checked={dedupeConfig.removeDuplicateEmails}
+          onCheckedChange={(removeDuplicateEmails) => setDedupeConfig({ removeDuplicateEmails })}
+        />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border bg-background p-4">
+          <div className="text-2xl font-semibold tabular-nums">
+            {(analysis?.fullDuplicates ?? 0).toLocaleString()}
+          </div>
+          <div className="mt-1 text-sm text-muted-foreground">fully duplicate rows found</div>
+        </div>
+        <div className="rounded-lg border bg-background p-4">
+          <div className="text-2xl font-semibold tabular-nums">
+            {(analysis?.emailDuplicates ?? 0).toLocaleString()}
+          </div>
+          <div className="mt-1 text-sm text-muted-foreground">duplicate email rows found</div>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="rounded-lg border p-4 text-sm text-muted-foreground">Scanning duplicate rows with a stream...</div>
+      ) : null}
+
+      {error ? (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{error}</div>
+      ) : null}
+
+      <label className="block space-y-2 text-sm">
+        <span className="font-medium">Which row to keep on duplicate?</span>
+        <select
+          value={dedupeConfig.strategy}
+          onChange={(event) => setDedupeConfig({ strategy: event.target.value as "first" | "last" })}
+          className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+        >
+          <option value="first">First occurrence</option>
+          <option value="last">Last occurrence</option>
+        </select>
+      </label>
+
+      {analysis ? (
+        <p className="text-xs text-muted-foreground">
+          Scanned {analysis.totalRows.toLocaleString()} rows for duplicate analysis.
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -683,20 +832,12 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersR
   const mapping = useTransformStore((state) => state.mapping);
   const filters = useTransformStore((state) => state.filters);
   const setFilterEnabled = useTransformStore((state) => state.setFilterEnabled);
-  const setDedupeConfig = useTransformStore((state) => state.setDedupeConfig);
   const estimate = useFilterEstimate(totalRows, previewRows, filters);
 
   const mappedColumns = useMemo(
     () => mapping.map((item: TransformMapping) => item.outputColumn),
     [mapping]
   );
-
-  const toggleDedupeColumn = (column: string, selected: boolean) => {
-    const columns = selected
-      ? [...filters.deduplication.config.columns, column]
-      : filters.deduplication.config.columns.filter((item) => item !== column);
-    setDedupeConfig({ columns });
-  };
 
   const runDisabled = mapping.length === 0;
 
@@ -745,33 +886,7 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, filtersR
           onEnabledChange={(enabled) => setFilterEnabled("deduplication", enabled)}
           miniStat={`Will remove ${estimate.deduplication.toLocaleString()} rows`}
         >
-          <div className="space-y-2">
-            <div className="text-sm font-medium">Match duplicate rows by</div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {mappedColumns.map((column) => (
-                <DedupeColumnToggle
-                  key={column}
-                  column={column}
-                  selected={filters.deduplication.config.columns.includes(column)}
-                  onToggle={toggleDedupeColumn}
-                />
-              ))}
-            </div>
-            {mappedColumns.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Map at least one output column to configure deduplication.</p>
-            ) : null}
-          </div>
-          <label className="block space-y-2 text-sm">
-            <span className="font-medium">Keep row</span>
-            <select
-              value={filters.deduplication.config.strategy}
-              onChange={(event) => setDedupeConfig({ strategy: event.target.value as "first" | "last" })}
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
-            >
-              <option value="first">First occurrence</option>
-              <option value="last">Last occurrence</option>
-            </select>
-          </label>
+          <DuplicateRemoverConfigPanel sourceColumns={sourceColumns} enabled={filters.deduplication.enabled} />
         </FilterCard>
       </div>
 
