@@ -468,66 +468,66 @@ export function TransformUpload() {
 
             <div className="hidden md:block">
               <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-              <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
-                <section className="rounded-lg border bg-muted/20 p-4">
-                  <h2 className="text-sm font-semibold">Source Columns</h2>
-                  <p className="mt-1 text-xs text-muted-foreground">Drag a header into an output slot.</p>
-                  <SortableContext items={sourceColumns.map((source) => source.id)} strategy={verticalListSortingStrategy}>
-                    <div className="mt-4 space-y-2">
-                      {sourceColumns.map((source) => (
-                        <SourceChip key={source.id} source={source} />
-                      ))}
-                    </div>
-                  </SortableContext>
-                </section>
-
-                <section className="rounded-lg border bg-muted/20 p-4">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                    <div>
-                      <h2 className="text-sm font-semibold">Output Schema Builder</h2>
-                      <p className="mt-1 text-xs text-muted-foreground">Unmapped source columns will be excluded.</p>
-                    </div>
-                    <form onSubmit={addOutputColumn} className="flex flex-col gap-2 sm:flex-row">
-                      <input
-                        value={newOutputColumn}
-                        onChange={(event) => setNewOutputColumn(event.target.value)}
-                        placeholder="New output column"
-                        className="rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
-                      />
-                      <Button type="submit" disabled={!newOutputColumn.trim()}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        Add Column
-                      </Button>
-                    </form>
-                  </div>
-
-                  <div className="mt-4 space-y-3">
-                    {outputSlots.length === 0 ? (
-                      <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-                        Add an output column to create a drop target.
+                <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+                  <section className="rounded-lg border bg-muted/20 p-4">
+                    <h2 className="text-sm font-semibold">Source Columns</h2>
+                    <p className="mt-1 text-xs text-muted-foreground">Drag a header into an output slot.</p>
+                    <SortableContext items={sourceColumns.map((source) => source.id)} strategy={verticalListSortingStrategy}>
+                      <div className="mt-4 space-y-2">
+                        {sourceColumns.map((source) => (
+                          <SourceChip key={source.id} source={source} />
+                        ))}
                       </div>
-                    ) : (
-                      outputSlots.map((slot) => (
-                        <OutputSlot
-                          key={slot.id}
-                          slot={slot}
-                          onRename={renameOutputColumn}
-                          onClearMapping={clearMapping}
-                          onRemoveSlot={removeSlot}
-                        />
-                      ))
-                    )}
-                  </div>
-                </section>
-              </div>
+                    </SortableContext>
+                  </section>
 
-              <DragOverlay>
-                {activeSourceColumn ? (
-                  <div className="rounded-lg border bg-background px-3 py-2 text-sm shadow-lg">
-                    {activeSourceColumn}
-                  </div>
-                ) : null}
-              </DragOverlay>
+                  <section className="rounded-lg border bg-muted/20 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                      <div>
+                        <h2 className="text-sm font-semibold">Output Schema Builder</h2>
+                        <p className="mt-1 text-xs text-muted-foreground">Unmapped source columns will be excluded.</p>
+                      </div>
+                      <form onSubmit={addOutputColumn} className="flex flex-col gap-2 sm:flex-row">
+                        <input
+                          value={newOutputColumn}
+                          onChange={(event) => setNewOutputColumn(event.target.value)}
+                          placeholder="New output column"
+                          className="rounded-lg border bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+                        />
+                        <Button type="submit" disabled={!newOutputColumn.trim()}>
+                          <Plus className="mr-2 h-4 w-4" />
+                          Add Column
+                        </Button>
+                      </form>
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      {outputSlots.length === 0 ? (
+                        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                          Add an output column to create a drop target.
+                        </div>
+                      ) : (
+                        outputSlots.map((slot) => (
+                          <OutputSlot
+                            key={slot.id}
+                            slot={slot}
+                            onRename={renameOutputColumn}
+                            onClearMapping={clearMapping}
+                            onRemoveSlot={removeSlot}
+                          />
+                        ))
+                      )}
+                    </div>
+                  </section>
+                </div>
+
+                <DragOverlay>
+                  {activeSourceColumn ? (
+                    <div className="rounded-lg border bg-background px-3 py-2 text-sm shadow-lg">
+                      {activeSourceColumn}
+                    </div>
+                  ) : null}
+                </DragOverlay>
               </DndContext>
             </div>
 
