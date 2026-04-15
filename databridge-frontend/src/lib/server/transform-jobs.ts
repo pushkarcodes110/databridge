@@ -108,6 +108,12 @@ function cleanTableName(name: string) {
   return cleaned || `transform_${new Date().toISOString().slice(0, 10)}`;
 }
 
+function autoImportTableName(name: string) {
+  const base = cleanTableName(name).slice(0, 48).trim();
+  const suffix = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
+  return `${base} ${suffix}`;
+}
+
 async function backendJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBaseUrl()}${path}`, {
     ...init,
@@ -118,7 +124,13 @@ async function backendJson<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(data?.detail || data?.error || `Backend request failed: ${response.status}`);
+    const detail = data?.detail || data?.error;
+    const message = typeof detail === "string"
+      ? detail
+      : detail
+        ? JSON.stringify(detail)
+        : `Backend request failed: ${response.status}`;
+    throw new Error(message);
   }
   return data as T;
 }
@@ -130,7 +142,7 @@ async function autoImportToNoco(job: TransformJob, uploadId: string, headers: st
   const defaultBase = bases[0];
   if (!defaultBase?.id) throw new Error("No NocoDB base found for auto import.");
 
-  const tableName = cleanTableName(job.autoImport.tableName);
+  const tableName = autoImportTableName(job.autoImport.tableName);
   const createdTable = await backendJson<{ id: string }>(`/nocodb/tables/${encodeURIComponent(defaultBase.id)}`, {
     method: "POST",
     body: JSON.stringify({

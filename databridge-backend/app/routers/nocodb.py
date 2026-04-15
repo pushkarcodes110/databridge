@@ -5,6 +5,7 @@ from app.database import get_db
 from pydantic import BaseModel
 from typing import List, Optional
 from app.models.settings import Settings as SettingsModel
+import re
 
 router = APIRouter(prefix="/api/nocodb", tags=["NocoDB"])
 
@@ -79,38 +80,97 @@ class CreateTableSchema(BaseModel):
     table_name: str
     columns: List[str]
 
+def sanitize_table_name(value: str) -> str:
+    table_name = re.sub(r"[^a-zA-Z0-9_]", "_", value.strip().replace(" ", "_")).lower()
+    table_name = re.sub(r"_+", "_", table_name).strip("_")
+    if not table_name:
+        table_name = "databridge_import"
+    if table_name[0].isdigit():
+        table_name = f"t_{table_name}"
+    return table_name[:60]
+
+def unique_column_title(value: str, seen_titles: set[str], index: int) -> str:
+    title = (value or "").strip() or f"Column {index + 1}"
+    title = title[:250]
+    base = title
+    suffix = 2
+    while title.lower() in seen_titles:
+        title = f"{base[:240]} {suffix}"
+        suffix += 1
+    seen_titles.add(title.lower())
+    return title
+
+def sanitize_column_name(value: str, seen_names: set[str], index: int) -> str:
+    column_name = re.sub(r"[^a-zA-Z0-9_]", "_", value.strip().replace(" ", "_")).lower()
+    column_name = re.sub(r"_+", "_", column_name).strip("_")
+    if not column_name or column_name == "id":
+        column_name = f"csv_col_{index + 1}"
+    if column_name[0].isdigit():
+        column_name = f"c_{column_name}"
+    column_name = column_name[:60]
+
+    base = column_name
+    suffix = 2
+    while column_name in seen_names:
+        trimmed = base[: max(1, 60 - len(str(suffix)) - 1)]
+        column_name = f"{trimmed}_{suffix}"
+        suffix += 1
+    seen_names.add(column_name)
+    return column_name
+
+def noco_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = response.text
+    return f"NocoDB table creation failed ({response.status_code}): {payload}"
+
 @router.post("/tables/{base_id}")
 async def create_table(base_id: str, data: CreateTableSchema, client_info: tuple = Depends(get_nocodb_client)):
     url, headers = client_info
     async with httpx.AsyncClient() as client:
-        columns_payload = [
-            {"column_name": "id", "title": "Id", "uidt": "ID", "pk": True, "ai": True}
-        ]
-        for col in data.columns:
-            # Robust sanitization: only alphanumeric and underscores
-            import re
-            safe_col_name = re.sub(r'[^a-zA-Z0-9_]', '_', col.replace(" ", "_")).lower()
-            if safe_col_name == "id" or not safe_col_name:
-                safe_col_name = f"csv_{safe_col_name or 'col'}"
-                
+        seen_titles: set[str] = set()
+        seen_names: set[str] = set()
+        columns_payload = []
+        for index, col in enumerate(data.columns):
+            title = unique_column_title(col, seen_titles, index)
+            column_name = sanitize_column_name(title, seen_names, index)
             columns_payload.append({
-                "column_name": safe_col_name,
-                "title": col,
+                "column_name": column_name,
+                "title": title,
                 "uidt": "SingleLineText"
             })
-            
+
+        table_name = sanitize_table_name(data.table_name)
         payload = {
-            "title": data.table_name,
-            "table_name": data.table_name.lower().replace(" ", "_"),
+            "title": data.table_name.strip() or table_name,
+            "table_name": table_name,
             "columns": columns_payload
         }
         
         endpoint = f"{url}/api/v2/meta/bases/{base_id}/tables"
         res = await client.post(endpoint, headers=headers, json=payload)
+
+        # Some NocoDB versions reject explicit database column names during v2
+        # table creation. Retry with title-only columns before falling back.
+        if res.status_code in (400, 422):
+            title_only_payload = {
+                **payload,
+                "columns": [
+                    {"title": column["title"], "uidt": column["uidt"]}
+                    for column in columns_payload
+                ],
+            }
+            retry_res = await client.post(endpoint, headers=headers, json=title_only_payload)
+            if retry_res.status_code < 400:
+                return retry_res.json()
+            res = retry_res
         
         if res.status_code == 404:
             endpoint = f"{url}/api/v1/db/meta/projects/{base_id}/tables"
             res = await client.post(endpoint, headers=headers, json=payload)
-            
-        res.raise_for_status()
+
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=noco_error_detail(res))
+
         return res.json()
