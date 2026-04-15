@@ -1,11 +1,12 @@
 import { readdir, rm, rmdir, stat } from "fs/promises";
 import { join } from "path";
 import { NextResponse } from "next/server";
+import { storageRoot } from "@/lib/server/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const rootDir = join("/tmp", "databridge");
+const rootDir = storageRoot();
 const maxAgeMs = 2 * 60 * 60 * 1000;
 
 async function removeOlderThan(dir: string, cutoff: number) {

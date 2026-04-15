@@ -1,6 +1,7 @@
 import { join } from "path";
 import { mkdir, readFile, readdir, writeFile } from "fs/promises";
 import { runTransform, TransformConfig, RunStats } from "@/lib/server/transform-runner";
+import { outputFilePath, transformJobsDirPath } from "@/lib/server/storage";
 
 type RunEvent = {
   step: string;
@@ -41,7 +42,7 @@ const globalJobs = globalThis as typeof globalThis & {
 const jobs = globalJobs.__databridgeTransformJobs ?? new Map<string, TransformJob>();
 globalJobs.__databridgeTransformJobs = jobs;
 
-const jobsDir = join("/tmp", "databridge", "transform-jobs");
+const jobsDir = transformJobsDirPath();
 let hydrated = false;
 
 function progressFromEvent(event: RunEvent | null, status: TransformJob["status"]) {
@@ -142,7 +143,7 @@ async function autoImportToNoco(job: TransformJob, uploadId: string, headers: st
     method: "POST",
     body: JSON.stringify({
       filename: `${tableName}.csv`,
-      file_path: join("/tmp", "databridge", "outputs", uploadId, "output.csv"),
+      file_path: outputFilePath(uploadId),
       file_size: stats.outputRows,
       total_rows: stats.outputRows,
       file_format: "csv",

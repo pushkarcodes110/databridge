@@ -1,8 +1,8 @@
 import { createReadStream } from "fs";
 import { access } from "fs/promises";
-import { join } from "path";
 import { Readable } from "stream";
 import { NextResponse } from "next/server";
+import { outputFilePath } from "@/lib/server/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +11,7 @@ export async function GET(
   _request: Request,
   { params }: { params: { uploadId: string } }
 ) {
-  const filePath = join("/tmp", "databridge", "outputs", params.uploadId, "output.csv");
+  const filePath = outputFilePath(params.uploadId);
 
   try {
     await access(filePath);

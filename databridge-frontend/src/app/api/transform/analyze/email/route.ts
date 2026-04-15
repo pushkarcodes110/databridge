@@ -1,8 +1,8 @@
 import { createReadStream } from "fs";
 import { access } from "fs/promises";
-import { join } from "path";
 import csv from "csv-parser";
 import { NextResponse } from "next/server";
+import { uploadInputPath } from "@/lib/server/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -156,7 +156,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "uploadId and sourceColumn are required." }, { status: 400 });
   }
 
-  const filePath = join("/tmp", "databridge", "uploads", uploadId, "input.csv");
+  const filePath = uploadInputPath(uploadId);
 
   try {
     await access(filePath);

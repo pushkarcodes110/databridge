@@ -5,6 +5,7 @@ import { join } from "path";
 import { Transform } from "stream";
 import { pipeline } from "stream/promises";
 import csv from "csv-parser";
+import { outputDirPath, outputFilePath, stageDirPath, uploadInputPath } from "@/lib/server/storage";
 
 export type TransformMapping = {
   outputColumn: string;
@@ -737,9 +738,9 @@ export async function runTransform(config: TransformConfig, emit: (event: object
     throw new Error("uploadId and mapping are required.");
   }
 
-  const inputPath = join("/tmp", "databridge", "uploads", config.uploadId, "input.csv");
-  const outputDir = join("/tmp", "databridge", "outputs", config.uploadId);
-  const stageDir = join("/tmp", "databridge", "stages", config.uploadId);
+  const inputPath = uploadInputPath(config.uploadId);
+  const outputDir = outputDirPath(config.uploadId);
+  const stageDir = stageDirPath(config.uploadId);
   await mkdir(outputDir, { recursive: true });
   await mkdir(stageDir, { recursive: true });
 
@@ -748,7 +749,7 @@ export async function runTransform(config: TransformConfig, emit: (event: object
   const emailPath = join(stageDir, "03-email.csv");
   const emailEnrichedPath = join(stageDir, "04-email-enriched.csv");
   const genderPath = join(stageDir, "05-gender.csv");
-  const outputPath = join(outputDir, "output.csv");
+  const outputPath = outputFilePath(config.uploadId);
   const stats: RunStats = {
     inputRows: 0,
     outputRows: 0,

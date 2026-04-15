@@ -1,6 +1,5 @@
 import { createWriteStream, createReadStream } from "fs";
 import { mkdir, unlink } from "fs/promises";
-import { join } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import type { ReadableStream as NodeReadableStream } from "stream/web";
@@ -8,6 +7,13 @@ import Busboy from "busboy";
 import Papa from "papaparse";
 import { v4 as uuidv4 } from "uuid";
 import { NextResponse } from "next/server";
+import {
+  ensureWritableStorage,
+  storageErrorMessage,
+  storageErrorStatus,
+  uploadDirPath,
+  uploadInputPath,
+} from "@/lib/server/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -132,10 +138,11 @@ async function parsePreview(filePath: string) {
 
 export async function POST(request: Request) {
   const uploadId = uuidv4();
-  const uploadDir = join("/tmp", "databridge", "uploads", uploadId);
-  const filePath = join(uploadDir, "input.csv");
+  const uploadDir = uploadDirPath(uploadId);
+  const filePath = uploadInputPath(uploadId);
 
   try {
+    await ensureWritableStorage();
     await saveMultipartCsv(request, uploadDir, filePath);
     const preview = await parsePreview(filePath);
 
@@ -147,7 +154,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     await unlink(filePath).catch(() => undefined);
-    const message = error instanceof Error ? error.message : "Upload failed.";
-    return NextResponse.json({ error: message }, { status: 400 });
+    const message = storageErrorMessage(error);
+    return NextResponse.json({ error: message }, { status: storageErrorStatus(error) });
   }
 }
