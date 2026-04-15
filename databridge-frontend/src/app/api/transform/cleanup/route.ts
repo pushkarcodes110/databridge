@@ -13,6 +13,8 @@ async function removeOlderThan(dir: string, cutoff: number) {
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
 
   for (const entry of entries) {
+    if (dir === rootDir && entry.name === "transform-jobs") continue;
+
     const path = join(dir, entry.name);
     const info = await stat(path).catch(() => null);
     if (!info) continue;

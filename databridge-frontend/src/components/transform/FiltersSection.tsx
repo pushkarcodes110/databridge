@@ -95,7 +95,10 @@ type RunEvent = {
   verifyMailbox?: boolean;
   batchSize?: number;
   importJobId?: string;
+  importError?: string;
   tableName?: string;
+  provider?: string;
+  column?: string;
 };
 
 type TransformOutputPreview = {
@@ -767,10 +770,26 @@ function EmailFilterConfigPanel({
               />
               <ValidationOption
                 label="Verify mailbox exists via API"
-                description="Uses the DataBridge email validation API with SMTP mailbox checks. This is slow for large files."
+                description="Adds a valid status column after filtering. Rows are not removed by mailbox status."
                 checked={emailConfig.verifyMailboxExists}
                 onCheckedChange={(verifyMailboxExists) => setEmailConfig({ verifyMailboxExists })}
               />
+              {emailConfig.verifyMailboxExists ? (
+                <label className="rounded-lg border bg-background p-4">
+                  <span className="text-sm font-medium">Mailbox validator</span>
+                  <select
+                    value={emailConfig.mailboxValidator}
+                    onChange={(event) => setEmailConfig({ mailboxValidator: event.target.value as "rapid" | "reacher" })}
+                    className="mt-3 w-full rounded-lg border bg-card px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="rapid">Rapid Email Validator (batch API)</option>
+                    <option value="reacher">Reacher</option>
+                  </select>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Rapid uses POST /api/validate/batch. Reacher uses POST /v0/check_email per address.
+                  </p>
+                </label>
+              ) : null}
               <ValidationOption
                 label="Normalize emails to lowercase"
                 checked={emailConfig.normalizeLowercase}
@@ -958,12 +977,14 @@ function ProcessingModal({
   open,
   event,
   events,
+  autoImportEnabled,
   onClose,
   onSaveToNocoDB,
 }: {
   open: boolean;
   event: RunEvent | null;
   events: RunEvent[];
+  autoImportEnabled: boolean;
   onClose: () => void;
   onSaveToNocoDB: () => void;
 }) {
@@ -1042,9 +1063,15 @@ function ProcessingModal({
               Download CSV
             </Button>
           ) : null}
-          <Button variant="outline" disabled={!isComplete || !event?.outputFile} onClick={onSaveToNocoDB}>
-            Save to NocoDB
-          </Button>
+          {autoImportEnabled ? (
+            <div className="rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              {event?.importJobId ? `Auto-import started: ${event.importJobId}` : "Auto-import runs after the full pipeline completes."}
+            </div>
+          ) : (
+            <Button variant="outline" disabled={!isComplete || !event?.outputFile} onClick={onSaveToNocoDB}>
+              Save to NocoDB
+            </Button>
+          )}
         </div>
 
         <div className="mt-6 rounded-lg border bg-background p-4">
@@ -1437,6 +1464,7 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFil
         open={runModalOpen}
         event={latestRunEvent}
         events={runEvents}
+        autoImportEnabled={autoImportToNoco}
         onClose={() => setRunModalOpen(false)}
         onSaveToNocoDB={() => setImportModalOpen(true)}
       />

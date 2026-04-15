@@ -11,6 +11,7 @@ export type EmailFilterConfig = {
   fixCommonTypos: boolean;
   removeInvalidFormat: boolean;
   verifyMailboxExists: boolean;
+  mailboxValidator: "rapid" | "reacher";
   normalizeLowercase: boolean;
   typoRulesExpanded: boolean;
 };
@@ -58,6 +59,7 @@ const defaultFilters: TransformFilters = {
       fixCommonTypos: true,
       removeInvalidFormat: true,
       verifyMailboxExists: false,
+      mailboxValidator: "rapid",
       normalizeLowercase: true,
       typoRulesExpanded: false,
     },

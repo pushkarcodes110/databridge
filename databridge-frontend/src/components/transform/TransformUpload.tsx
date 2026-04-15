@@ -372,6 +372,7 @@ export function TransformUpload() {
         column: "email",
         removeInvalidFormat: true,
         verifyMailboxExists: true,
+        mailboxValidator: "rapid",
         normalizeLowercase: true,
         fixCommonTypos: true,
       });

@@ -1,4 +1,5 @@
 import { join } from "path";
+import { mkdir, readFile, readdir, writeFile } from "fs/promises";
 import { runTransform, TransformConfig, RunStats } from "@/lib/server/transform-runner";
 
 type RunEvent = {
@@ -20,9 +21,13 @@ type AutoImportConfig = {
 type TransformJob = {
   id: string;
   status: "pending" | "running" | "complete" | "failed";
+  progress: number;
+  config: TransformConfig;
   events: RunEvent[];
   latestEvent: RunEvent | null;
   createdAt: string;
+  startedAt?: string;
+  updatedAt: string;
   completedAt?: string;
   autoImport?: AutoImportConfig;
   importJobId?: string;
@@ -35,6 +40,62 @@ const globalJobs = globalThis as typeof globalThis & {
 
 const jobs = globalJobs.__databridgeTransformJobs ?? new Map<string, TransformJob>();
 globalJobs.__databridgeTransformJobs = jobs;
+
+const jobsDir = join("/tmp", "databridge", "transform-jobs");
+let hydrated = false;
+
+function progressFromEvent(event: RunEvent | null, status: TransformJob["status"]) {
+  if (status === "complete") return 100;
+  if (status === "failed") return Number(event?.progress ?? 0);
+
+  const step = event?.step || "queued";
+  const stepProgress = Math.max(0, Math.min(Number(event?.progress ?? 0), 100));
+  const ranges: Record<string, [number, number]> = {
+    queued: [0, 1],
+    mapping: [1, 20],
+    deduplication: [20, 35],
+    email: [35, 50],
+    email_enrichment: [50, 70],
+    gender: [70, 90],
+    write: [90, 98],
+    noco_import: [98, 99],
+  };
+  const [start, end] = ranges[step] ?? [1, 98];
+  return Math.round((start + ((end - start) * stepProgress / 100)) * 100) / 100;
+}
+
+function publicJob(job: TransformJob) {
+  return {
+    ...job,
+    progress: progressFromEvent(job.latestEvent, job.status),
+  };
+}
+
+async function persistJob(job: TransformJob) {
+  job.progress = progressFromEvent(job.latestEvent, job.status);
+  job.updatedAt = new Date().toISOString();
+  await mkdir(jobsDir, { recursive: true });
+  await writeFile(join(jobsDir, `${job.id}.json`), JSON.stringify(job, null, 2));
+}
+
+async function hydrateJobs() {
+  if (hydrated) return;
+  hydrated = true;
+  const entries = await readdir(jobsDir).catch(() => []);
+  await Promise.all(entries.filter((entry) => entry.endsWith(".json")).map(async (entry) => {
+    try {
+      const data = JSON.parse(await readFile(join(jobsDir, entry), "utf8")) as TransformJob;
+      if (data?.id && !jobs.has(data.id)) jobs.set(data.id, data);
+    } catch {
+      // Ignore malformed job snapshots.
+    }
+  }));
+}
+
+function remember(job: TransformJob) {
+  jobs.set(job.id, job);
+  void persistJob(job);
+}
 
 function apiBaseUrl() {
   return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
@@ -109,19 +170,25 @@ export function startTransformJob(config: TransformConfig, autoImport?: AutoImpo
   const job: TransformJob = {
     id: jobId,
     status: "pending",
+    progress: 0,
+    config,
     events: [],
     latestEvent: { step: "queued", progress: 0 },
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     autoImport,
   };
-  jobs.set(jobId, job);
+  remember(job);
 
   void (async () => {
     job.status = "running";
+    job.startedAt = new Date().toISOString();
+    await persistJob(job);
     const emit = (event: object) => {
       const parsed = event as RunEvent;
       job.events.push(parsed);
       job.latestEvent = parsed;
+      void persistJob(job);
     };
 
     try {
@@ -142,20 +209,33 @@ export function startTransformJob(config: TransformConfig, autoImport?: AutoImpo
         job.latestEvent = completeEvent;
       }
       job.status = "complete";
+      await persistJob(job);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Transform failed.";
       const errorEvent: RunEvent = { step: "error", error: message };
       job.events.push(errorEvent);
       job.latestEvent = errorEvent;
       job.status = "failed";
+      await persistJob(job);
     } finally {
       job.completedAt = new Date().toISOString();
+      await persistJob(job);
     }
   })();
 
-  return job;
+  return publicJob(job);
 }
 
-export function getTransformJob(jobId: string) {
-  return jobs.get(jobId) ?? null;
+export async function getTransformJob(jobId: string) {
+  await hydrateJobs();
+  const job = jobs.get(jobId) ?? null;
+  return job ? publicJob(job) : null;
+}
+
+export async function listTransformJobs(limit = 100) {
+  await hydrateJobs();
+  return Array.from(jobs.values())
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, Math.min(Math.max(limit, 1), 200))
+    .map(publicJob);
 }

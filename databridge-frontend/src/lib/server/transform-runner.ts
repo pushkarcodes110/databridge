@@ -24,6 +24,7 @@ export type TransformConfig = {
         fixCommonTypos: boolean;
         removeInvalidFormat: boolean;
         verifyMailboxExists: boolean;
+        mailboxValidator?: "rapid" | "reacher";
         normalizeLowercase: boolean;
       };
     };
@@ -71,6 +72,8 @@ const serviceUrls = Array.from(new Set([
   "http://host.docker.internal:8001",
   "http://localhost:8001",
 ]));
+const rapidEmailValidatorUrl = (process.env.RAPID_EMAIL_VALIDATOR_URL || "http://r0s48o0gwo4g0gkggscswg80.152.53.177.111.sslip.io").replace(/\/$/, "");
+const reacherUrl = (process.env.REACHER_URL || "http://reacher:8080").replace(/\/$/, "");
 const EMAIL_BATCH_SIZE = 50;
 const GENDER_BATCH_SIZE = 500;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -121,6 +124,12 @@ const typoDomains: Record<string, string> = {
 type EmailValidationResult = {
   cleaned: string | null;
   status: "valid" | "invalid" | "typo_fixed" | "undeliverable" | "unknown";
+};
+
+type MailboxValidationProvider = "rapid" | "reacher";
+
+type MailboxValidationResult = {
+  status: string;
 };
 
 function csvEscape(value: unknown) {
@@ -423,31 +432,79 @@ async function deduplicate(config: TransformConfig, inputPath: string, outputPat
   });
 }
 
-async function validateEmailBatch(emails: string[], config: TransformConfig) {
-  for (const url of serviceUrls) {
-    try {
-      const response = await fetch(`${url}/validate-emails`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          emails,
-          options: {
-            fixTypos: config.filters.email.config.fixCommonTypos,
-            removeInvalid: config.filters.email.config.removeInvalidFormat,
-            verifyMailbox: config.filters.email.config.verifyMailboxExists,
-            normalize: config.filters.email.config.normalizeLowercase,
-          },
-        }),
-      });
+function normalizeMailboxStatus(status: string | undefined) {
+  return String(status || "UNKNOWN").trim().toUpperCase() || "UNKNOWN";
+}
 
-      if (!response.ok) throw new Error("Email validation service failed.");
-      return response.json() as Promise<{ results: EmailValidationResult[] }>;
-    } catch {
-      // Try the next configured service URL.
-    }
+function statusFromReacher(result: Record<string, unknown> | undefined) {
+  const isReachable = String(result?.is_reachable || "").toLowerCase();
+  const syntax = result?.syntax && typeof result.syntax === "object" ? result.syntax as Record<string, unknown> : {};
+  const mx = result?.mx && typeof result.mx === "object" ? result.mx as Record<string, unknown> : {};
+
+  if (syntax.is_valid_syntax === false) return "INVALID_SYNTAX";
+  if (mx.accepts_mail === false) return "NO_MX_RECORDS";
+  if (isReachable === "safe") return "VALID";
+  if (isReachable === "invalid") return "INVALID";
+  if (isReachable === "risky") return "RISKY";
+  return "UNKNOWN";
+}
+
+async function validateMailboxWithRapid(emails: string[]): Promise<MailboxValidationResult[]> {
+  const response = await fetch(`${rapidEmailValidatorUrl}/api/validate/batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ emails }),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(data?.error || `Rapid Email Validator failed: ${response.status}`);
   }
 
-  return null;
+  const results = Array.isArray(data?.results) ? data.results : [];
+  return emails.map((_email, index) => {
+    const item = results[index] && typeof results[index] === "object" ? results[index] as Record<string, unknown> : undefined;
+    return { status: normalizeMailboxStatus(typeof item?.status === "string" ? item.status : undefined) };
+  });
+}
+
+async function validateMailboxWithReacher(emails: string[]): Promise<MailboxValidationResult[]> {
+  return Promise.all(emails.map(async (email) => {
+    const response = await fetch(`${reacherUrl}/v0/check_email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to_email: email,
+        from_email: process.env.SMTP_FROM_EMAIL || "validator@databridge.local",
+        hello_name: process.env.SMTP_HELO_NAME || "databridge.local",
+      }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(data?.error || `Reacher failed: ${response.status}`);
+    }
+    return { status: statusFromReacher(data && typeof data === "object" ? data as Record<string, unknown> : undefined) };
+  }));
+}
+
+async function validateMailboxBatch(emails: string[], provider: MailboxValidationProvider) {
+  const results: MailboxValidationResult[] = emails.map((email) => (
+    String(email ?? "").trim() ? { status: "UNKNOWN" } : { status: "EMPTY" }
+  ));
+  const pending = emails
+    .map((email, index) => ({ email: String(email ?? "").trim(), index }))
+    .filter((item) => item.email);
+
+  if (pending.length === 0) return results;
+
+  const providerResults = provider === "reacher"
+    ? await validateMailboxWithReacher(pending.map((item) => item.email))
+    : await validateMailboxWithRapid(pending.map((item) => item.email));
+
+  pending.forEach((item, index) => {
+    results[item.index] = providerResults[index] ?? { status: "UNKNOWN" };
+  });
+
+  return results;
 }
 
 async function cleanEmails(config: TransformConfig, inputPath: string, outputPath: string, headers: string[], emit: (event: object) => void, stats: RunStats, totalRows: number) {
@@ -460,11 +517,10 @@ async function cleanEmails(config: TransformConfig, inputPath: string, outputPat
   const emailColumn = config.filters.email.config.column;
   const selectedDomains = new Set(config.filters.email.config.selectedDomains);
   let rowsProcessed = 0;
-  const shouldVerifyMailbox = config.filters.email.config.verifyMailboxExists;
   emit({
     step: "email",
-    validationMode: shouldVerifyMailbox ? "smtp-api" : "local",
-    verifyMailbox: shouldVerifyMailbox,
+    validationMode: "local",
+    verifyMailbox: false,
     batchSize: EMAIL_BATCH_SIZE,
   });
 
@@ -472,30 +528,13 @@ async function cleanEmails(config: TransformConfig, inputPath: string, outputPat
     createReadStream(inputPath),
     csv(),
     makeBatchTransform(EMAIL_BATCH_SIZE, async (rows) => {
-      const validation = shouldVerifyMailbox
-        ? await validateEmailBatch(rows.map((row) => row[emailColumn] ?? ""), config)
-        : null;
-
-      if (shouldVerifyMailbox && !validation) {
-        const message = "Email validation service unreachable. Transform stopped to avoid writing a local-only email CSV.";
-        emit({ step: "email", warning: message });
-        throw new Error(`${message} Start the email-validator service or disable mailbox verification.`);
-      }
-
-      if (shouldVerifyMailbox && validation && validation.results.length !== rows.length) {
-        const message = "Email validation service returned an incomplete result set. Transform stopped to avoid writing an inaccurate CSV.";
-        emit({ step: "email", warning: message });
-        throw new Error(message);
-      }
-
       const outputRows: Row[] = [];
 
-      rows.forEach((row, index) => {
+      rows.forEach((row) => {
         rowsProcessed += 1;
-        const fallback = localEmailValidation(row[emailColumn] ?? "", config);
-        const result = validation?.results[index] ?? fallback;
+        const result = localEmailValidation(row[emailColumn] ?? "", config);
 
-        if (result.status === "typo_fixed" || (!validation && fallback.status === "typo_fixed")) {
+        if (result.status === "typo_fixed") {
           stats.emailsTypoFixed += 1;
         }
 
@@ -503,12 +542,12 @@ async function cleanEmails(config: TransformConfig, inputPath: string, outputPat
           result.status === "invalid" ||
           result.status === "undeliverable";
 
-        if (shouldRemoveEmail && (config.filters.email.config.removeInvalidFormat || shouldVerifyMailbox)) {
+        if (shouldRemoveEmail && config.filters.email.config.removeInvalidFormat) {
           stats.rowsRemovedInvalidEmail += 1;
           return;
         }
 
-        row[emailColumn] = result.cleaned ?? fallback.cleaned ?? row[emailColumn] ?? "";
+        row[emailColumn] = result.cleaned ?? row[emailColumn] ?? "";
 
         const domain = emailDomain(String(row[emailColumn] ?? ""));
         if (selectedDomains.size > 0 && domain && !selectedDomains.has(domain)) {
@@ -540,6 +579,66 @@ async function cleanEmails(config: TransformConfig, inputPath: string, outputPat
     emailsTypoFixed: stats.emailsTypoFixed,
   });
   return headers;
+}
+
+async function enrichEmailValidity(config: TransformConfig, inputPath: string, outputPath: string, headers: string[], emit: (event: object) => void, totalRows: number) {
+  if (!config.filters.email.enabled || !config.filters.email.config.column || !config.filters.email.config.verifyMailboxExists) {
+    await pipeline(createReadStream(inputPath), createWriteStream(outputPath));
+    emit({ step: "email_enrichment", progress: 100, skipped: true });
+    return headers;
+  }
+
+  const emailColumn = config.filters.email.config.column;
+  const provider = config.filters.email.config.mailboxValidator || "rapid";
+  const validColumn = headers.includes("valid") ? "email_valid" : "valid";
+  const outputHeaders = headers.includes(validColumn) ? headers : [...headers, validColumn];
+  let rowsProcessed = 0;
+
+  emit({
+    step: "email_enrichment",
+    progress: 0,
+    provider,
+    column: validColumn,
+    batchSize: EMAIL_BATCH_SIZE,
+  });
+
+  await pipeline(
+    createReadStream(inputPath),
+    csv(),
+    makeBatchTransform(EMAIL_BATCH_SIZE, async (rows) => {
+      const validation = await validateMailboxBatch(rows.map((row) => row[emailColumn] ?? ""), provider);
+      if (validation.length !== rows.length) {
+        throw new Error("Email validator returned an incomplete result set.");
+      }
+
+      rows.forEach((row, index) => {
+        rowsProcessed += 1;
+        row[validColumn] = normalizeMailboxStatus(validation[index]?.status);
+      });
+
+      emit({
+        step: "email_enrichment",
+        progress: Math.round((rowsProcessed / Math.max(totalRows, 1)) * 100),
+        rowsProcessed,
+        provider,
+        column: validColumn,
+      });
+
+      return rows;
+    }),
+    new CsvStringifyTransform(outputHeaders),
+    createWriteStream(outputPath)
+  );
+
+  emit({
+    step: "email_enrichment",
+    progress: 100,
+    rowsProcessed,
+    provider,
+    column: validColumn,
+  });
+
+  return outputHeaders;
 }
 
 async function classifyGenderBatch(names: string[]) {
@@ -647,6 +746,8 @@ export async function runTransform(config: TransformConfig, emit: (event: object
   const mappedPath = join(stageDir, "01-mapped.csv");
   const dedupedPath = join(stageDir, "02-deduped.csv");
   const emailPath = join(stageDir, "03-email.csv");
+  const emailEnrichedPath = join(stageDir, "04-email-enriched.csv");
+  const genderPath = join(stageDir, "05-gender.csv");
   const outputPath = join(outputDir, "output.csv");
   const stats: RunStats = {
     inputRows: 0,
@@ -674,11 +775,16 @@ export async function runTransform(config: TransformConfig, emit: (event: object
   const emailInputRows = await countRows(dedupedPath);
   headers = await cleanEmails(config, dedupedPath, emailPath, headers, emit, stats, emailInputRows);
 
+  emit({ step: "email_enrichment", progress: 0 });
+  const emailEnrichmentInputRows = await countRows(emailPath);
+  headers = await enrichEmailValidity(config, emailPath, emailEnrichedPath, headers, emit, emailEnrichmentInputRows);
+
   emit({ step: "gender", progress: 0, rowsRemovedWrongGender: 0 });
-  const genderInputRows = await countRows(emailPath);
-  headers = await classifyGender(config, emailPath, outputPath, headers, emit, stats, genderInputRows);
+  const genderInputRows = await countRows(emailEnrichedPath);
+  headers = await classifyGender(config, emailEnrichedPath, genderPath, headers, emit, stats, genderInputRows);
 
   emit({ step: "write", progress: 0 });
+  await pipeline(createReadStream(genderPath), createWriteStream(outputPath));
   stats.outputRows = await countRows(outputPath);
   stats.rowsRemoved = Math.max(stats.inputRows - stats.outputRows, 0);
 

@@ -101,6 +101,33 @@ Expected statuses are `valid`, `typo_fixed`, `invalid`, `undeliverable`, or `unk
 3. Use the default Next.js build settings.
 4. Add environment variables:
    - `EMAIL_VALIDATOR_URL=https://<api-domain>`
+   - `RAPID_EMAIL_VALIDATOR_URL=http://r0s48o0gwo4g0gkggscswg80.152.53.177.111.sslip.io`
+   - `REACHER_URL=http://<reacher-host>:8080` only if using Reacher as the mailbox validator.
    - `GENDER_SERVICE_URL=https://<api-domain>` only if you want it separate; otherwise omit it.
 5. Deploy.
 6. Run a production transform from the Vercel URL and confirm email validation calls the Coolify API.
+
+## Mailbox Enrichment API
+
+When `Verify mailbox exists via API` is enabled in the transform UI, the pipeline enriches rows after filtering and before import by adding a `valid` column. It does not remove rows by mailbox status.
+
+Rapid Email Validator request:
+
+```bash
+curl -fsS "$RAPID_EMAIL_VALIDATOR_URL/api/validate/batch" \
+  -H "Content-Type: application/json" \
+  -d '{"emails":["test@example.com"]}'
+```
+
+Expected response shape:
+
+```json
+{
+  "results": [
+    {
+      "email": "test@example.com",
+      "status": "NO_MX_RECORDS"
+    }
+  ]
+}
+```
