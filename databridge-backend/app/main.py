@@ -21,3 +21,8 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     return {"message": "DataBridge API is running"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}

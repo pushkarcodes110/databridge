@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+uploads
+*.csv
+*.xlsx
+*.xls
+probe_*.py
+test_*.py
+check_jobs.py
+deep_list.py
+inspect_table.py
