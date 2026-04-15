@@ -463,7 +463,7 @@ async function cleanEmails(config: TransformConfig, inputPath: string, outputPat
   const shouldVerifyMailbox = config.filters.email.config.verifyMailboxExists;
   emit({
     step: "email",
-    validationMode: shouldVerifyMailbox ? "reacher" : "local",
+    validationMode: shouldVerifyMailbox ? "smtp-api" : "local",
     verifyMailbox: shouldVerifyMailbox,
     batchSize: EMAIL_BATCH_SIZE,
   });
@@ -479,7 +479,7 @@ async function cleanEmails(config: TransformConfig, inputPath: string, outputPat
       if (shouldVerifyMailbox && !validation) {
         const message = "Email validation service unreachable. Transform stopped to avoid writing a local-only email CSV.";
         emit({ step: "email", warning: message });
-        throw new Error(`${message} Start the email-validator/Reacher services or disable mailbox verification.`);
+        throw new Error(`${message} Start the email-validator service or disable mailbox verification.`);
       }
 
       if (shouldVerifyMailbox && validation && validation.results.length !== rows.length) {
@@ -501,8 +501,7 @@ async function cleanEmails(config: TransformConfig, inputPath: string, outputPat
 
         const shouldRemoveEmail =
           result.status === "invalid" ||
-          result.status === "undeliverable" ||
-          (shouldVerifyMailbox && result.status === "unknown");
+          result.status === "undeliverable";
 
         if (shouldRemoveEmail && (config.filters.email.config.removeInvalidFormat || shouldVerifyMailbox)) {
           stats.rowsRemovedInvalidEmail += 1;

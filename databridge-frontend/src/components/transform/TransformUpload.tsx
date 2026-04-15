@@ -2,18 +2,15 @@
 
 import { FormEvent, useCallback, useMemo, useRef, useState } from "react";
 import {
+  closestCenter,
   DndContext,
   DragEndEvent,
   DragOverlay,
   DragStartEvent,
+  pointerWithin,
+  useDraggable,
   useDroppable,
 } from "@dnd-kit/core";
-import {
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import { useDropzone } from "react-dropzone";
 import { ArrowRight, FileText, GripVertical, Loader2, Plus, UploadCloud, X } from "lucide-react";
 import { toast } from "sonner";
@@ -118,23 +115,17 @@ function SourceChip({ source }: { source: SourceColumn }) {
     attributes,
     listeners,
     setNodeRef,
-    transform,
-    transition,
     isDragging,
-  } = useSortable({ id: source.id, data: { header: source.header } });
+  } = useDraggable({ id: source.id, data: { header: source.header } });
 
   return (
     <button
       ref={setNodeRef}
       type="button"
       className={cn(
-        "flex w-full items-center justify-between rounded-lg border bg-background px-3 py-2 text-left text-sm transition",
-        isDragging ? "opacity-40" : "hover:border-primary/60 hover:bg-muted/30"
+        "flex w-full cursor-grab items-center justify-between rounded-lg border bg-background px-3 py-2 text-left text-sm transition active:cursor-grabbing",
+        isDragging ? "opacity-30 ring-2 ring-primary/30" : "hover:border-primary/60 hover:bg-muted/30"
       )}
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-      }}
       {...attributes}
       {...listeners}
     >
@@ -146,11 +137,13 @@ function SourceChip({ source }: { source: SourceColumn }) {
 
 function OutputSlot({
   slot,
+  activeSourceColumn,
   onRename,
   onClearMapping,
   onRemoveSlot,
 }: {
   slot: OutputColumnSlot;
+  activeSourceColumn: string | null;
   onRename: (id: string, value: string) => void;
   onClearMapping: (id: string) => void;
   onRemoveSlot: (id: string) => void;
@@ -162,7 +155,8 @@ function OutputSlot({
       ref={setNodeRef}
       className={cn(
         "rounded-lg border border-dashed bg-background p-4 transition",
-        isOver ? "border-primary bg-primary/5" : "border-muted-foreground/30"
+        isOver ? "border-primary bg-primary/10 shadow-sm ring-2 ring-primary/20" : "border-muted-foreground/30",
+        activeSourceColumn && !isOver ? "bg-muted/20" : ""
       )}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -173,7 +167,13 @@ function OutputSlot({
           aria-label="Output column name"
         />
 
-        {slot.sourceColumn ? (
+        {isOver && activeSourceColumn ? (
+          <div className="flex min-w-0 items-center gap-2 rounded-lg border border-primary/50 bg-primary/10 px-3 py-2 text-sm text-primary">
+            <span className="min-w-0 truncate font-medium">Drop to map</span>
+            <span className="text-primary/70">←</span>
+            <span className="min-w-0 truncate">{activeSourceColumn}</span>
+          </div>
+        ) : slot.sourceColumn ? (
           <div className="flex min-w-0 items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm">
             <span className="min-w-0 truncate font-medium">{slot.outputColumn || "Untitled"}</span>
             <span className="text-muted-foreground">←</span>
@@ -188,8 +188,11 @@ function OutputSlot({
             </button>
           </div>
         ) : (
-          <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-            Drop source column
+          <div className={cn(
+            "rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground transition",
+            activeSourceColumn ? "border-primary/40 bg-primary/5 text-primary" : ""
+          )}>
+            {activeSourceColumn ? "Drop here to map" : "Drop source column"}
           </div>
         )}
 
@@ -541,18 +544,23 @@ export function TransformUpload() {
             </div>
 
             <div className="hidden md:block">
-              <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+              <DndContext
+                collisionDetection={(args) => {
+                  const pointerCollisions = pointerWithin(args);
+                  return pointerCollisions.length > 0 ? pointerCollisions : closestCenter(args);
+                }}
+                onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
+              >
                 <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
                   <section className="rounded-lg border bg-muted/20 p-4">
                     <h2 className="text-sm font-semibold">Source Columns</h2>
                     <p className="mt-1 text-xs text-muted-foreground">Drag a header into an output slot.</p>
-                    <SortableContext items={sourceColumns.map((source) => source.id)} strategy={verticalListSortingStrategy}>
-                      <div className="mt-4 space-y-2">
-                        {sourceColumns.map((source) => (
-                          <SourceChip key={source.id} source={source} />
-                        ))}
-                      </div>
-                    </SortableContext>
+                    <div className="mt-4 space-y-2">
+                      {sourceColumns.map((source) => (
+                        <SourceChip key={source.id} source={source} />
+                      ))}
+                    </div>
                   </section>
 
                   <section className="rounded-lg border bg-muted/20 p-4">
@@ -585,6 +593,7 @@ export function TransformUpload() {
                           <OutputSlot
                             key={slot.id}
                             slot={slot}
+                            activeSourceColumn={activeSourceColumn}
                             onRename={renameOutputColumn}
                             onClearMapping={clearMapping}
                             onRemoveSlot={removeSlot}

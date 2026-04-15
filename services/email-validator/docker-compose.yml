@@ -1,0 +1,23 @@
+services:
+  email-validator:
+    build:
+      context: .
+    image: databridge-email-validator:latest
+    restart: unless-stopped
+    ports:
+      - "${EMAIL_VALIDATOR_PORT:-8001}:8001"
+    environment:
+      ENVIRONMENT: production
+      GENDERIZE_API_KEY: ${GENDERIZE_API_KEY:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?Set SMTP_FROM_EMAIL to a real sender address on your domain}
+      SMTP_HELO_NAME: ${SMTP_HELO_NAME:?Set SMTP_HELO_NAME to the VPS hostname or mail domain}
+      SMTP_CONNECT_TIMEOUT_SECONDS: ${SMTP_CONNECT_TIMEOUT_SECONDS:-8}
+      SMTP_READ_TIMEOUT_SECONDS: ${SMTP_READ_TIMEOUT_SECONDS:-8}
+      SMTP_MAX_MX_HOSTS: ${SMTP_MAX_MX_HOSTS:-3}
+      EMAIL_VALIDATION_CONCURRENCY: ${EMAIL_VALIDATION_CONCURRENCY:-20}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

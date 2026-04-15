@@ -767,7 +767,7 @@ function EmailFilterConfigPanel({
               />
               <ValidationOption
                 label="Verify mailbox exists via API"
-                description="Uses reacher.email or MillionVerifier. This is slow for large files and costs API credits."
+                description="Uses the DataBridge email validation API with SMTP mailbox checks. This is slow for large files."
                 checked={emailConfig.verifyMailboxExists}
                 onCheckedChange={(verifyMailboxExists) => setEmailConfig({ verifyMailboxExists })}
               />
@@ -1412,7 +1412,10 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFil
 
         if (job.status === "complete" || job.status === "failed") {
           if (job.importError) toast.error(job.importError);
-          if (job.latestEvent) setLatestRunEvent(job.latestEvent as RunEvent);
+          const finalEvent = job.status === "complete"
+            ? ((job.latestEvent?.step === "complete" ? job.latestEvent : events.findLast((item) => item.step === "complete")) as RunEvent | undefined)
+            : (job.latestEvent as RunEvent | undefined);
+          if (finalEvent) setLatestRunEvent(finalEvent);
           break;
         }
 

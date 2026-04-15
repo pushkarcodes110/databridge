@@ -136,6 +136,10 @@ export function startTransformJob(config: TransformConfig, autoImport?: AutoImpo
           job.events.push(importErrorEvent);
           job.latestEvent = importErrorEvent;
         }
+        if (job.importJobId) completeEvent.importJobId = job.importJobId;
+        if (job.importError) completeEvent.importError = job.importError;
+        completeEvent.progress = 100;
+        job.latestEvent = completeEvent;
       }
       job.status = "complete";
     } catch (error) {

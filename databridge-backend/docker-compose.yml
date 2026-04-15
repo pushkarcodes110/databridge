@@ -68,51 +68,17 @@ services:
     environment:
       - ENVIRONMENT=development
       - GENDERIZE_API_KEY=${GENDERIZE_API_KEY:-}
-      - REACHER_URL=http://reacher:8080
-      - REACHER_FROM_EMAIL=${REACHER_FROM_EMAIL:-validator@databridge.local}
-      - REACHER_HELLO_NAME=${REACHER_HELLO_NAME:-databridge.local}
-      - REACHER_SINGLE_TIMEOUT_SECONDS=${REACHER_SINGLE_TIMEOUT_SECONDS:-30}
-      - REACHER_CONCURRENCY=${REACHER_CONCURRENCY:-50}
-      - REACHER_USE_BULK=${REACHER_USE_BULK:-false}
-    depends_on:
-      - reacher
-
-  reacher:
-    image: reacherhq/backend:latest
-    platform: linux/amd64
-    ports:
-      - "8080:8080"
-    environment:
-      - RCH__HTTP_HOST=0.0.0.0
-      - RCH__HTTP_PORT=8080
-      - RCH__FROM_EMAIL=${REACHER_FROM_EMAIL:-validator@databridge.local}
-      - RCH__HELLO_NAME=${REACHER_HELLO_NAME:-databridge.local}
-      - RCH_HTTP_HOST=0.0.0.0
-      - PORT=8080
-      - RCH_ENABLE_BULK=1
-      - DATABASE_URL=postgres://user:pushkar@db:5432/databridge
-      - RCH__STORAGE__POSTGRES__DB_URL=postgres://user:pushkar@db:5432/databridge
-      - RCH_FROM_EMAIL=${REACHER_FROM_EMAIL:-validator@databridge.local}
-      - RCH__WORKER__ENABLE=true
-      - RCH__WORKER__RABBITMQ__URL=amqp://guest:guest@reacher-rabbitmq:5672
-      - RCH__WORKER__RABBITMQ__CONCURRENCY=${REACHER_WORKER_CONCURRENCY:-20}
-      - RUST_LOG=info
-    depends_on:
-      db:
-        condition: service_started
-      reacher-rabbitmq:
-        condition: service_healthy
-
-  reacher-rabbitmq:
-    image: rabbitmq:4.0-management
-    expose:
-      - "5672"
-      - "15672"
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-validator@databridge.local}
+      - SMTP_HELO_NAME=${SMTP_HELO_NAME:-databridge.local}
+      - SMTP_CONNECT_TIMEOUT_SECONDS=${SMTP_CONNECT_TIMEOUT_SECONDS:-8}
+      - SMTP_READ_TIMEOUT_SECONDS=${SMTP_READ_TIMEOUT_SECONDS:-8}
+      - SMTP_MAX_MX_HOSTS=${SMTP_MAX_MX_HOSTS:-3}
+      - EMAIL_VALIDATION_CONCURRENCY=${EMAIL_VALIDATION_CONCURRENCY:-20}
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 5s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).read()"]
+      interval: 30s
       timeout: 5s
-      retries: 12
+      retries: 3
 
 volumes:
   postgres_data:
