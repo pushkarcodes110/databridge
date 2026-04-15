@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { cancelJob, getJobProgress } from "@/lib/api";
 import { Loader2, CheckCircle, AlertCircle, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 
 interface ImportProgressProps {
   jobId: string;
@@ -50,6 +51,8 @@ export function ImportProgress({ jobId }: ImportProgressProps) {
   const totalProcessed = inserted + failed;
   const progressPercent = total > 0 ? (totalProcessed / total) * 100 : 0;
   const safePercent = Math.min(100, Math.max(0, progressPercent));
+  const isActive = status === "pending" || status === "running";
+  const isLooping = isActive && safePercent <= 0;
 
   const handleCancel = async () => {
     try {
@@ -61,6 +64,7 @@ export function ImportProgress({ jobId }: ImportProgressProps) {
       setTotal(data.total || 0);
       setQueuePosition(typeof data.queue_position === "number" ? data.queue_position : null);
       setErrorSummary(data.error_summary || null);
+      toast.warning("Import stop requested.");
     } finally {
       setIsCancelling(false);
     }
@@ -70,7 +74,7 @@ export function ImportProgress({ jobId }: ImportProgressProps) {
     <div className="bg-card border rounded-2xl shadow-sm p-8 max-w-3xl mx-auto backdrop-blur-xl">
       <div className="flex flex-col items-center text-center space-y-4">
         
-        {status === "running" || status === "pending" ? (
+        {isActive ? (
            <div className="relative">
              <Loader2 className="w-16 h-16 text-primary animate-spin" />
              <div className="absolute inset-0 flex items-center justify-center font-semibold text-sm">
@@ -101,7 +105,10 @@ export function ImportProgress({ jobId }: ImportProgressProps) {
 
       <div className="mt-8">
         <div className="w-full bg-muted rounded-full h-3 overflow-hidden shadow-inner">
-           <div className="bg-primary h-3 transition-all duration-500" style={{ width: `${safePercent}%` }} />
+           <div
+             className={`h-3 bg-primary transition-all duration-500 ${isLooping ? "progress-loop" : ""}`}
+             style={isLooping ? undefined : { width: `${safePercent}%` }}
+           />
         </div>
       </div>
 
@@ -127,7 +134,7 @@ export function ImportProgress({ jobId }: ImportProgressProps) {
       ) : null}
 
       <div className="mt-6 flex flex-wrap justify-center gap-3">
-        {(status === "pending" || status === "running") ? (
+        {isActive ? (
           <Button variant="destructive" onClick={handleCancel} disabled={isCancelling}>
             <Square className="mr-2 h-4 w-4" />
             {isCancelling ? "Stopping..." : "Stop Import"}

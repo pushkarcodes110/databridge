@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { cancelJob, getJob, getJobs, resumeJob } from "@/lib/api";
 import { AlertCircle, CheckCircle2, Clock3, Loader2, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 
 type JobSummary = {
   id: string;
@@ -74,6 +75,10 @@ function statusIcon(status: string) {
   if (status === "complete") return <CheckCircle2 className="h-4 w-4 text-green-500" />;
   if (status === "failed" || status === "cancelled") return <AlertCircle className="h-4 w-4 text-red-500" />;
   return <Clock3 className="h-4 w-4 text-amber-500" />;
+}
+
+function isActiveStatus(status: string) {
+  return status === "pending" || status === "running" || status === "queued";
 }
 
 function transformInputRows(job: TransformJobApi) {
@@ -204,6 +209,9 @@ export default function JobsPage() {
       setSelectedJob((current) => (current ? { ...current, ...data } : current));
       const latestJobs = await getJobs();
       setJobs(latestJobs);
+      toast.warning("Job stop requested.");
+    } catch {
+      toast.error("Failed to stop job.");
     } finally {
       setIsCancelling(false);
     }
@@ -217,6 +225,9 @@ export default function JobsPage() {
       setSelectedJob((current) => (current ? { ...current, ...data } : current));
       const latestJobs = await getJobs();
       setJobs(latestJobs);
+      toast.success("Job resumed.");
+    } catch {
+      toast.error("Failed to resume job.");
     } finally {
       setIsResuming(false);
     }
@@ -270,7 +281,10 @@ export default function JobsPage() {
                     <span>{job.progress_percent.toFixed(0)}%</span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-muted">
-                    <div className="h-full bg-primary transition-all duration-300" style={{ width: `${job.progress_percent}%` }} />
+                    <div
+                      className={`h-full bg-primary transition-all duration-300 ${isActiveStatus(job.status) && job.progress_percent <= 0 ? "progress-loop" : ""}`}
+                      style={isActiveStatus(job.status) && job.progress_percent <= 0 ? undefined : { width: `${job.progress_percent}%` }}
+                    />
                   </div>
                 </div>
 
@@ -329,8 +343,8 @@ export default function JobsPage() {
                 </div>
                 <div className="h-3 overflow-hidden rounded-full bg-muted">
                   <div
-                    className="h-full bg-primary transition-all duration-300"
-                    style={{ width: `${selectedJob.progress_percent}%` }}
+                    className={`h-full bg-primary transition-all duration-300 ${isActiveStatus(selectedJob.status) && selectedJob.progress_percent <= 0 ? "progress-loop" : ""}`}
+                    style={isActiveStatus(selectedJob.status) && selectedJob.progress_percent <= 0 ? undefined : { width: `${selectedJob.progress_percent}%` }}
                   />
                 </div>
               </div>

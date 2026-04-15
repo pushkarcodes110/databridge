@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
@@ -26,3 +29,31 @@ def read_root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/storage")
+def storage_health():
+    root = Path("/tmp/databridge")
+    outputs = root / "outputs"
+    uploads = root / "uploads"
+    probe = root / ".backend-write-test"
+
+    writable = False
+    error = None
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok")
+        probe.unlink(missing_ok=True)
+        writable = True
+    except Exception as exc:
+        error = str(exc)
+
+    return {
+        "root": str(root),
+        "root_exists": root.exists(),
+        "root_realpath": os.path.realpath(root),
+        "uploads_exists": uploads.exists(),
+        "outputs_exists": outputs.exists(),
+        "writable": writable,
+        "error": error,
+    }

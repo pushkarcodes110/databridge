@@ -5,6 +5,8 @@ import { useDropzone } from "react-dropzone";
 import { UploadCloud, FileType2, Loader2 } from "lucide-react";
 import { uploadChunk } from "@/lib/api";
 import { v4 as uuidv4 } from "uuid";
+import { Progress } from "@/components/ui/progress";
+import { toast } from "sonner";
 
 interface FileUploadProps {
   onUploadComplete: (fileId: string, filename: string) => void;
@@ -47,7 +49,7 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
       onUploadComplete(fileId, file.name);
     } catch (error) {
       console.error("Upload failed", error);
-      alert("Upload failed. Check console.");
+      toast.error("Upload failed. Please try again.");
     } finally {
       setUploading(false);
     }
@@ -57,8 +59,6 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
     onDrop,
     accept: {
       "text/csv": [".csv"],
-      "application/json": [".json"],
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx", ".xls"],
     },
     multiple: false
   });
@@ -67,7 +67,7 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
     <div className="w-full">
       <div 
         {...getRootProps()} 
-        className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-300 ${
+        className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-300 active:scale-[0.99] ${
           isDragActive ? "border-primary bg-primary/5" : "border-muted-foreground/20 hover:border-primary/50 hover:bg-muted/10"
         }`}
       >
@@ -78,7 +78,7 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
           </div>
           <div>
             <p className="text-xl font-semibold">Drop your file here, or click to browse</p>
-            <p className="text-sm text-muted-foreground mt-2">Supports CSV, JSON, and Excel files up to safely limited large sizes.</p>
+            <p className="text-sm text-muted-foreground mt-2">Supports CSV files up to safely limited large sizes.</p>
           </div>
         </div>
       </div>
@@ -91,9 +91,7 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
                <span className="text-sm font-medium">Uploading file...</span>
                <span className="text-xs font-semibold text-primary">{progress.toFixed(0)}%</span>
              </div>
-             <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
-               <div className="bg-primary h-1.5 transition-all duration-300" style={{ width: `${progress}%` }} />
-             </div>
+             <Progress value={progress} indeterminate={progress <= 0} />
            </div>
            <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
         </div>

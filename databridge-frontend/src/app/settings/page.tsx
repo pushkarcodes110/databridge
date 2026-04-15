@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { getSettings, saveSettings, testNocoDBConnection } from "@/lib/api";
 import { Database, Lock, Save, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 
 export default function SettingsPage() {
   const [url, setUrl] = useState("");
@@ -14,20 +15,22 @@ export default function SettingsPage() {
   const [testResult, setTestResult] = useState<{status: string, message: string} | null>(null);
 
   useEffect(() => {
-    getSettings().then(data => {
-      setUrl(data.nocodb_url || "");
-      setToken(data.nocodb_api_token || "");
-      setLoading(false);
-    });
+    getSettings()
+      .then(data => {
+        setUrl(data.nocodb_url || "");
+        setToken(data.nocodb_api_token || "");
+      })
+      .catch(() => toast.error("Failed to load settings."))
+      .finally(() => setLoading(false));
   }, []);
 
   const handleSave = async () => {
     setSaving(true);
     try {
       await saveSettings({ nocodb_url: url, nocodb_api_token: token, default_concurrency: 5, table_presets: [] });
-      alert("Settings saved successfully!");
+      toast.success("Settings saved.");
     } catch (err) {
-      alert("Failed to save settings.");
+      toast.error("Failed to save settings.");
     } finally {
       setSaving(false);
     }
@@ -39,8 +42,15 @@ export default function SettingsPage() {
     try {
       const res = await testNocoDBConnection({ nocodb_url: url, nocodb_api_token: token, default_concurrency: 5, table_presets: [] });
       setTestResult(res);
+      if (res.status === "success") {
+        toast.success(res.message || "NocoDB connection works.");
+      } else {
+        toast.error(res.message || "NocoDB connection failed.");
+      }
     } catch (err: any) {
-      setTestResult({ status: "error", message: err.message || "Network Error" });
+      const message = err.message || "Network Error";
+      setTestResult({ status: "error", message });
+      toast.error(message);
     } finally {
       setTesting(false);
     }

@@ -8,6 +8,21 @@
   .text-balance {
     text-wrap: balance;
   }
+
+  .progress-loop {
+    width: 40%;
+    min-width: 7rem;
+    animation: progress-loop 1.25s ease-in-out infinite;
+  }
+}
+
+@keyframes progress-loop {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
 }
 
 @layer base {
@@ -94,6 +109,6 @@
 }
 
 .bg-dot-pattern {
-  background-image: radial-gradient(rgba(255, 255, 255, 0.1) 1px, transparent 1px);
+  background-image: radial-gradient(color-mix(in oklch, var(--foreground) 11%, transparent) 1px, transparent 1px);
   background-size: 20px 20px;
 }

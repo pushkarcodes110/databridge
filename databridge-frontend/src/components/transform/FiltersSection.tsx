@@ -994,6 +994,7 @@ function ProcessingModal({
   const isError = event?.step === "error";
   const stats = event?.stats;
   const progress = isComplete ? 100 : Math.min(Number(event?.progress ?? 0), 100);
+  const isLooping = !isComplete && !isError && progress <= 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-6 backdrop-blur">
@@ -1018,7 +1019,10 @@ function ProcessingModal({
             <span className="text-muted-foreground tabular-nums">{progress}%</span>
           </div>
           <div className="h-3 overflow-hidden rounded-full bg-muted">
-            <div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} />
+            <div
+              className={`h-full bg-primary transition-all ${isLooping ? "progress-loop" : ""}`}
+              style={isLooping ? undefined : { width: `${progress}%` }}
+            />
           </div>
         </div>
 
@@ -1453,6 +1457,7 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFil
         step: "error",
         error: error instanceof Error ? error.message : "Transform failed.",
       };
+      toast.error(event.error);
       setLatestRunEvent(event);
       setRunEvents((current) => [...current, event]);
     }

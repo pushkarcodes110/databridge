@@ -5,9 +5,11 @@ import { FileUpload } from "@/components/FileUpload";
 import { DataPreview } from "@/components/DataPreview";
 import { ColumnMapper } from "@/components/ColumnMapper";
 import { ImportProgress } from "@/components/ImportProgress";
+import { QuickImportOptions } from "@/components/QuickImportOptions";
 import { getPreview, getBases, getTables, getFields, createJob, createTable } from "@/lib/api";
-import { Database, PlayCircle } from "lucide-react";
+import { Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 
 export default function Home() {
   const [step, setStep] = useState<"upload" | "map" | "importing">("upload");
@@ -32,7 +34,9 @@ export default function Home() {
   // Load Bases on Map step mount
   useEffect(() => {
     if (step === "map") {
-      getBases().then(setBases).catch(() => alert("Configure NocoDB in settings first!"));
+      getBases()
+        .then(setBases)
+        .catch(() => toast.error("Configure NocoDB in settings first."));
     }
   }, [step]);
 
@@ -78,7 +82,7 @@ export default function Home() {
 
   const handleMappingComplete = async (mapping: Record<string, string>) => {
     if (!selectedBase || (!selectedTable && !isCreatingTable)) {
-      alert("Please select a target Base and Table.");
+      toast.warning("Select a target Base and Table before importing.");
       return;
     }
     
@@ -109,8 +113,9 @@ export default function Home() {
       
       setJobId(job.id);
       setStep("importing");
+      toast.success("Import job started.");
     } catch (e) {
-      alert("Failed to start job or create table.");
+      toast.error("Failed to start job or create table.");
     }
   };
 
@@ -122,7 +127,7 @@ export default function Home() {
       setPreviewData(data);
       setStep("map");
     } catch (e) {
-      alert("Failed to generate file preview.");
+      toast.error("Failed to generate file preview.");
     }
   };
 
@@ -134,9 +139,10 @@ export default function Home() {
       {step === "upload" && (
         <div className="max-w-3xl mx-auto space-y-6">
           <div className="text-center mb-10">
-            <h1 className="text-4xl font-extrabold tracking-tight mb-3">Import Data Safely</h1>
-            <p className="text-lg text-muted-foreground">Upload gigantic CSV files without crashing your browser. DataBridge chunks and streams your payload natively.</p>
+            <h1 className="text-4xl font-extrabold tracking-tight mb-3">Quick Import</h1>
+            <p className="text-lg text-muted-foreground">Upload large CSV files without crashing your browser. DataBridge chunks and streams your payload natively.</p>
           </div>
+          <QuickImportOptions />
           <FileUpload onUploadComplete={handleUploadComplete} />
         </div>
       )}
@@ -230,7 +236,7 @@ export default function Home() {
           <ImportProgress jobId={jobId} />
           
           <div className="mt-10 text-center">
-             <Button variant="outline" onClick={() => setStep("upload")}>Import Another File</Button>
+             <Button variant="outline" onClick={() => setStep("upload")}>Quick Import Another File</Button>
           </div>
         </div>
       )}

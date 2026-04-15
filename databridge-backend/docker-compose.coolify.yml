@@ -34,7 +34,7 @@ services:
     ports:
       - "8008:8000"
     volumes:
-      - ${DATABRIDGE_SHARED_PATH:-/data/databridge-shared}:/tmp/databridge
+      - ${DATABRIDGE_SHARED_PATH:-/data/coolify/databridge-shared}:/tmp/databridge
       - backend_uploads:/app/uploads
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-databridge}
@@ -67,7 +67,7 @@ services:
     restart: unless-stopped
     command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-5}
     volumes:
-      - ${DATABRIDGE_SHARED_PATH:-/data/databridge-shared}:/tmp/databridge
+      - ${DATABRIDGE_SHARED_PATH:-/data/coolify/databridge-shared}:/tmp/databridge
       - backend_uploads:/app/uploads
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-databridge}

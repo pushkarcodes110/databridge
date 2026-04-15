@@ -8,8 +8,11 @@ function Progress({
   className,
   children,
   value,
+  indeterminate,
   ...props
-}: ProgressPrimitive.Root.Props) {
+}: ProgressPrimitive.Root.Props & { indeterminate?: boolean }) {
+  const isIndeterminate = indeterminate || value === undefined || value === null;
+
   return (
     <ProgressPrimitive.Root
       value={value}
@@ -19,7 +22,7 @@ function Progress({
     >
       {children}
       <ProgressTrack>
-        <ProgressIndicator />
+        <ProgressIndicator className={isIndeterminate ? "progress-loop" : undefined} />
       </ProgressTrack>
     </ProgressPrimitive.Root>
   )
