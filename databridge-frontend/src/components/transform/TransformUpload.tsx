@@ -56,6 +56,14 @@ function formatBytes(bytes: number) {
 
 const defaultOutputColumns = ["name", "email", "phone"];
 
+function randomId() {
+  if (globalThis.crypto && "randomUUID" in globalThis.crypto) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
 function fileNameWithoutExtension(fileName: string) {
   return fileName.replace(/\.[^.]+$/, "").trim();
 }
@@ -69,7 +77,7 @@ function inferSourceColumn(headers: string[], outputColumn: string) {
 
 function createDefaultOutputSlots(headers: string[]): OutputColumnSlot[] {
   return defaultOutputColumns.map((outputColumn) => ({
-    id: `output:${crypto.randomUUID()}`,
+    id: `output:${randomId()}`,
     outputColumn,
     sourceColumn: inferSourceColumn(headers, outputColumn),
   }));
@@ -315,7 +323,7 @@ export function TransformUpload() {
     setOutputSlots((current) => [
       ...current,
       {
-        id: `output:${crypto.randomUUID()}`,
+        id: `output:${randomId()}`,
         outputColumn,
         sourceColumn: null,
       },
@@ -372,7 +380,7 @@ export function TransformUpload() {
         column: "email",
         removeInvalidFormat: true,
         verifyMailboxExists: true,
-        mailboxValidator: "rapid",
+        mailboxValidator: "reacher",
         normalizeLowercase: true,
         fixCommonTypos: true,
       });

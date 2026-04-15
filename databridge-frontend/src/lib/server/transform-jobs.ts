@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { join } from "path";
 import { mkdir, readFile, readdir, writeFile } from "fs/promises";
 import { runTransform, TransformConfig, RunStats } from "@/lib/server/transform-runner";
@@ -167,7 +168,7 @@ async function autoImportToNoco(job: TransformJob, uploadId: string, headers: st
 }
 
 export function startTransformJob(config: TransformConfig, autoImport?: AutoImportConfig) {
-  const jobId = crypto.randomUUID();
+  const jobId = randomUUID();
   const job: TransformJob = {
     id: jobId,
     status: "pending",

@@ -75,6 +75,8 @@ const serviceUrls = Array.from(new Set([
 ]));
 const rapidEmailValidatorUrl = (process.env.RAPID_EMAIL_VALIDATOR_URL || "http://r0s48o0gwo4g0gkggscswg80.152.53.177.111.sslip.io").replace(/\/$/, "");
 const reacherUrl = (process.env.REACHER_URL || "http://reacher:8080").replace(/\/$/, "");
+const reacherCheckPath = process.env.REACHER_CHECK_PATH || "/v1/check_email";
+const reacherConcurrency = Math.max(1, Math.min(Number(process.env.REACHER_CONCURRENCY || "25"), 100));
 const EMAIL_BATCH_SIZE = 50;
 const GENDER_BATCH_SIZE = 500;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -450,6 +452,26 @@ function statusFromReacher(result: Record<string, unknown> | undefined) {
   return "UNKNOWN";
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  handler: (item: T, index: number) => Promise<R>
+) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await handler(items[currentIndex], currentIndex);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
 async function validateMailboxWithRapid(emails: string[]): Promise<MailboxValidationResult[]> {
   const response = await fetch(`${rapidEmailValidatorUrl}/api/validate/batch`, {
     method: "POST",
@@ -469,22 +491,18 @@ async function validateMailboxWithRapid(emails: string[]): Promise<MailboxValida
 }
 
 async function validateMailboxWithReacher(emails: string[]): Promise<MailboxValidationResult[]> {
-  return Promise.all(emails.map(async (email) => {
-    const response = await fetch(`${reacherUrl}/v0/check_email`, {
+  return mapWithConcurrency(emails, reacherConcurrency, async (email) => {
+    const response = await fetch(`${reacherUrl}${reacherCheckPath}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        to_email: email,
-        from_email: process.env.SMTP_FROM_EMAIL || "validator@databridge.local",
-        hello_name: process.env.SMTP_HELO_NAME || "databridge.local",
-      }),
+      body: JSON.stringify({ to_email: email }),
     });
     const data = await response.json().catch(() => null);
     if (!response.ok) {
       throw new Error(data?.error || `Reacher failed: ${response.status}`);
     }
     return { status: statusFromReacher(data && typeof data === "object" ? data as Record<string, unknown> : undefined) };
-  }));
+  });
 }
 
 async function validateMailboxBatch(emails: string[], provider: MailboxValidationProvider) {

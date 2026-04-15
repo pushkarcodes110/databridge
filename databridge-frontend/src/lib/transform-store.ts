@@ -59,7 +59,7 @@ const defaultFilters: TransformFilters = {
       fixCommonTypos: true,
       removeInvalidFormat: true,
       verifyMailboxExists: false,
-      mailboxValidator: "rapid",
+      mailboxValidator: "reacher",
       normalizeLowercase: true,
       typoRulesExpanded: false,
     },

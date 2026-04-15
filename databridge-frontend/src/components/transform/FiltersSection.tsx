@@ -782,11 +782,11 @@ function EmailFilterConfigPanel({
                     onChange={(event) => setEmailConfig({ mailboxValidator: event.target.value as "rapid" | "reacher" })}
                     className="mt-3 w-full rounded-lg border bg-card px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
                   >
+                    <option value="reacher">Reacher Commercial Trial</option>
                     <option value="rapid">Rapid Email Validator (batch API)</option>
-                    <option value="reacher">Reacher</option>
                   </select>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Rapid uses POST /api/validate/batch. Reacher uses POST /v0/check_email per address.
+                    Reacher uses POST /v1/check_email per address in parallel. Rapid uses POST /api/validate/batch.
                   </p>
                 </label>
               ) : null}
