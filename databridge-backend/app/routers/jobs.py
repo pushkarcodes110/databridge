@@ -123,6 +123,16 @@ def create_job(request: JobCreateRequest, db: Session = Depends(get_db)):
     if stored_file_path and not os.path.isabs(stored_file_path):
         stored_file_path = os.path.join(settings.upload_dir, stored_file_path)
 
+    if not stored_file_path or not os.path.exists(stored_file_path):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Import file not found at {stored_file_path}. "
+                "If this came from Transform, mount the same shared VPS directory "
+                "to /tmp/databridge in both frontend and backend containers."
+            ),
+        )
+
     job = ImportJob(
         filename=request.filename,
         file_path=stored_file_path,

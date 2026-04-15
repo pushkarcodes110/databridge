@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { join } from "path";
-import { mkdir, readFile, readdir, writeFile } from "fs/promises";
+import { access, mkdir, readFile, readdir, writeFile } from "fs/promises";
 import { runTransform, TransformConfig, RunStats } from "@/lib/server/transform-runner";
 import { outputFilePath, transformJobsDirPath } from "@/lib/server/storage";
 
@@ -138,6 +138,13 @@ async function backendJson<T>(path: string, init?: RequestInit): Promise<T> {
 async function autoImportToNoco(job: TransformJob, uploadId: string, headers: string[], stats: RunStats) {
   if (!job.autoImport?.enabled || stats.outputRows <= 0) return;
 
+  const outputPath = outputFilePath(uploadId);
+  try {
+    await access(outputPath);
+  } catch {
+    throw new Error(`Transform output file is missing at ${outputPath}. Auto-import was not started.`);
+  }
+
   const bases = await backendJson<Array<{ id: string; title: string }>>("/nocodb/bases");
   const defaultBase = bases[0];
   if (!defaultBase?.id) throw new Error("No NocoDB base found for auto import.");
@@ -156,7 +163,7 @@ async function autoImportToNoco(job: TransformJob, uploadId: string, headers: st
     method: "POST",
     body: JSON.stringify({
       filename: `${tableName}.csv`,
-      file_path: outputFilePath(uploadId),
+      file_path: outputPath,
       file_size: stats.outputRows,
       total_rows: stats.outputRows,
       file_format: "csv",
@@ -172,8 +179,9 @@ async function autoImportToNoco(job: TransformJob, uploadId: string, headers: st
     step: "noco_import",
     progress: 100,
     importJobId: importJob.id,
-    tableName,
-    baseId: defaultBase.id,
+      tableName,
+      baseId: defaultBase.id,
+      filePath: outputPath,
   };
   job.events.push(event);
   job.latestEvent = event;

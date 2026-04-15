@@ -8,9 +8,12 @@ export function CleanupScheduler() {
       fetch("/api/transform/cleanup", { method: "POST" }).catch(() => undefined);
     };
 
-    cleanup();
-    const interval = window.setInterval(cleanup, 30 * 60 * 1000);
-    return () => window.clearInterval(interval);
+    const timeout = window.setTimeout(cleanup, 5 * 60 * 1000);
+    const interval = window.setInterval(cleanup, 6 * 60 * 60 * 1000);
+    return () => {
+      window.clearTimeout(timeout);
+      window.clearInterval(interval);
+    };
   }, []);
 
   return null;
