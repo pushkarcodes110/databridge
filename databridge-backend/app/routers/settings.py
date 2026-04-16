@@ -18,6 +18,9 @@ class SettingsSchema(BaseModel):
     nocodb_url: Optional[str] = None
     nocodb_api_token: Optional[str] = None
     base_id: Optional[str] = None
+    webhook_enabled: bool = False
+    webhook_url: Optional[str] = None
+    webhook_batch_size: int = 500
     default_concurrency: int = 5
     table_presets: List[TablePreset] = []
 
@@ -34,6 +37,9 @@ def get_settings(db: Session = Depends(get_db)):
         "nocodb_url": settings_obj.nocodb_url,
         "nocodb_api_token": "********" if settings_obj.nocodb_api_token else None,
         "base_id": settings_obj.base_id,
+        "webhook_enabled": bool(settings_obj.webhook_enabled),
+        "webhook_url": settings_obj.webhook_url,
+        "webhook_batch_size": settings_obj.webhook_batch_size or 500,
         "default_concurrency": settings_obj.default_concurrency,
         "table_presets": settings_obj.table_presets
     }
@@ -50,6 +56,9 @@ def update_settings(settings_in: SettingsSchema, db: Session = Depends(get_db)):
         settings_obj.nocodb_api_token = settings_in.nocodb_api_token
 
     settings_obj.base_id = settings_in.base_id
+    settings_obj.webhook_enabled = 1 if settings_in.webhook_enabled else 0
+    settings_obj.webhook_url = settings_in.webhook_url.strip() if settings_in.webhook_url else None
+    settings_obj.webhook_batch_size = max(1, min(settings_in.webhook_batch_size or 500, 2000))
     settings_obj.default_concurrency = settings_in.default_concurrency
     settings_obj.table_presets = [p.dict() for p in settings_in.table_presets]
     
@@ -60,6 +69,9 @@ def update_settings(settings_in: SettingsSchema, db: Session = Depends(get_db)):
         "nocodb_url": settings_obj.nocodb_url,
         "nocodb_api_token": "********" if settings_obj.nocodb_api_token else None,
         "base_id": settings_obj.base_id,
+        "webhook_enabled": bool(settings_obj.webhook_enabled),
+        "webhook_url": settings_obj.webhook_url,
+        "webhook_batch_size": settings_obj.webhook_batch_size or 500,
         "default_concurrency": settings_obj.default_concurrency,
         "table_presets": settings_obj.table_presets
     }

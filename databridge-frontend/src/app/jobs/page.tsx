@@ -31,6 +31,13 @@ type JobDetail = JobSummary & {
   latestEvent?: Record<string, unknown> | null;
   importJobId?: string;
   importError?: string;
+  webhookExport?: {
+    status: "idle" | "running" | "complete" | "failed";
+    batchesSent: number;
+    batchesFailed: number;
+    rowsSent: number;
+    error?: string;
+  };
   error_count?: number;
   errors?: Array<{
     id: string;
@@ -59,6 +66,7 @@ type TransformJobApi = {
   completedAt?: string;
   importJobId?: string;
   importError?: string;
+  webhookExport?: JobDetail["webhookExport"];
 };
 
 function formatDate(value: string | null) {
@@ -154,7 +162,7 @@ function transformSummary(job: TransformJobApi): JobSummary {
     created_at: job.createdAt,
     started_at: job.startedAt || null,
     completed_at: job.completedAt || null,
-    error_summary: job.importError || (job.latestEvent?.error ? String(job.latestEvent.error) : null),
+    error_summary: job.importError || job.webhookExport?.error || (job.latestEvent?.error ? String(job.latestEvent.error) : null),
   };
 }
 
@@ -166,6 +174,7 @@ function transformDetail(job: TransformJobApi): JobDetail {
     latestEvent: job.latestEvent || null,
     importJobId: job.importJobId,
     importError: job.importError,
+    webhookExport: job.webhookExport,
   };
 }
 
@@ -460,6 +469,19 @@ export default function JobsPage() {
                       : selectedJob.importJobId
                         ? `NocoDB import job started: ${selectedJob.importJobId}`
                         : "No NocoDB import was started for this transform."}
+                  </div>
+                </div>
+              ) : null}
+
+              {selectedJob.kind === "transform" && selectedJob.webhookExport ? (
+                <div className={`rounded-xl border p-4 text-sm ${selectedJob.webhookExport.status === "failed" ? "border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-300" : "bg-muted/20"}`}>
+                  <div className="font-semibold">Webhook Export</div>
+                  <div className="mt-1">
+                    {selectedJob.webhookExport.status === "complete"
+                      ? `${formatNumber(selectedJob.webhookExport.rowsSent)} rows sent in ${formatNumber(selectedJob.webhookExport.batchesSent)} batches.`
+                      : selectedJob.webhookExport.status === "running"
+                        ? `${formatNumber(selectedJob.webhookExport.rowsSent)} rows sent so far.`
+                        : selectedJob.webhookExport.error || "Webhook export failed."}
                   </div>
                 </div>
               ) : null}

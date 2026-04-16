@@ -1,6 +1,8 @@
 import { randomUUID } from "crypto";
+import { createReadStream } from "fs";
 import { join } from "path";
 import { access, mkdir, readFile, readdir, writeFile } from "fs/promises";
+import csv from "csv-parser";
 import { runTransform, TransformConfig, RunStats } from "@/lib/server/transform-runner";
 import { outputFilePath, transformJobsDirPath } from "@/lib/server/storage";
 
@@ -20,6 +22,23 @@ type AutoImportConfig = {
   tableName: string;
 };
 
+type WebhookSettings = {
+  webhook_enabled?: boolean;
+  webhook_url?: string | null;
+  webhook_batch_size?: number | null;
+};
+
+type WebhookExportState = {
+  status: "idle" | "running" | "complete" | "failed";
+  url?: string;
+  batchesSent: number;
+  batchesFailed: number;
+  rowsSent: number;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+};
+
 type TransformJob = {
   id: string;
   status: "pending" | "running" | "complete" | "failed";
@@ -34,6 +53,7 @@ type TransformJob = {
   autoImport?: AutoImportConfig;
   importJobId?: string;
   importError?: string;
+  webhookExport?: WebhookExportState;
 };
 
 const globalJobs = globalThis as typeof globalThis & {
@@ -45,6 +65,11 @@ globalJobs.__databridgeTransformJobs = jobs;
 
 const jobsDir = transformJobsDirPath();
 let hydrated = false;
+const WEBHOOK_DEFAULT_BATCH_SIZE = 500;
+const WEBHOOK_MAX_BATCH_SIZE = 2000;
+const WEBHOOK_MAX_BODY_BYTES = Number(process.env.WEBHOOK_MAX_BODY_BYTES || 4 * 1024 * 1024);
+const WEBHOOK_TIMEOUT_MS = Number(process.env.WEBHOOK_TIMEOUT_MS || 20000);
+const WEBHOOK_MAX_RETRIES = Number(process.env.WEBHOOK_MAX_RETRIES || 3);
 
 function progressFromEvent(event: RunEvent | null, status: TransformJob["status"]) {
   if (status === "complete") return 100;
@@ -61,9 +86,219 @@ function progressFromEvent(event: RunEvent | null, status: TransformJob["status"
     gender: [70, 90],
     write: [90, 98],
     noco_import: [98, 99],
+    webhook_export: [99, 100],
   };
   const [start, end] = ranges[step] ?? [1, 98];
   return Math.round((start + ((end - start) * stepProgress / 100)) * 100) / 100;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function clampWebhookBatchSize(value: unknown) {
+  const parsed = Number(value || WEBHOOK_DEFAULT_BATCH_SIZE);
+  if (!Number.isFinite(parsed)) return WEBHOOK_DEFAULT_BATCH_SIZE;
+  return Math.max(1, Math.min(Math.floor(parsed), WEBHOOK_MAX_BATCH_SIZE));
+}
+
+function validWebhookUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+async function postWebhookBatch(url: string, rows: Record<string, string>[], batchNumber: number) {
+  const body = JSON.stringify(rows);
+  const bodyBytes = Buffer.byteLength(body);
+  if (bodyBytes > WEBHOOK_MAX_BODY_BYTES) {
+    throw new Error(`Webhook batch ${batchNumber} exceeds ${WEBHOOK_MAX_BODY_BYTES} bytes.`);
+  }
+
+  let lastError: string | null = null;
+  for (let attempt = 1; attempt <= WEBHOOK_MAX_RETRIES; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: controller.signal,
+      });
+      const text = await response.text().catch(() => "");
+      if (response.ok) return;
+      lastError = `Webhook batch ${batchNumber} failed (${response.status}): ${text.slice(0, 180)}`;
+    } catch (error) {
+      lastError = error instanceof Error && error.name === "AbortError"
+        ? `Webhook batch ${batchNumber} timed out after ${WEBHOOK_TIMEOUT_MS}ms.`
+        : error instanceof Error
+          ? error.message
+          : `Webhook batch ${batchNumber} failed.`;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (attempt < WEBHOOK_MAX_RETRIES) {
+      await sleep(750 * Math.pow(2, attempt - 1));
+    }
+  }
+
+  throw new Error(lastError || `Webhook batch ${batchNumber} failed.`);
+}
+
+function splitWebhookBatch(rows: Record<string, string>[]) {
+  const chunks: Record<string, string>[][] = [];
+  let current: Record<string, string>[] = [];
+
+  for (const row of rows) {
+    const candidate = [...current, row];
+    if (Buffer.byteLength(JSON.stringify(candidate)) <= WEBHOOK_MAX_BODY_BYTES) {
+      current = candidate;
+      continue;
+    }
+
+    if (current.length > 0) {
+      chunks.push(current);
+      current = [row];
+    }
+
+    if (Buffer.byteLength(JSON.stringify(current)) > WEBHOOK_MAX_BODY_BYTES) {
+      throw new Error(`A single webhook row exceeds ${WEBHOOK_MAX_BODY_BYTES} bytes.`);
+    }
+  }
+
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+async function exportCsvToWebhook(job: TransformJob, uploadId: string, settings: WebhookSettings) {
+  if (!settings.webhook_enabled || !settings.webhook_url) return;
+  if (!validWebhookUrl(settings.webhook_url)) {
+    throw new Error("Webhook URL must start with http:// or https://.");
+  }
+
+  const outputPath = outputFilePath(uploadId);
+  await access(outputPath);
+
+  const batchSize = clampWebhookBatchSize(settings.webhook_batch_size);
+  job.webhookExport = {
+    status: "running",
+    url: settings.webhook_url,
+    batchesSent: 0,
+    batchesFailed: 0,
+    rowsSent: 0,
+    startedAt: new Date().toISOString(),
+  };
+  job.events.push({ step: "webhook_export", progress: 0, batchSize });
+  job.latestEvent = job.events[job.events.length - 1];
+  await persistJob(job);
+
+  let batch: Record<string, string>[] = [];
+  let batchNumber = 0;
+  let rowsRead = 0;
+
+  const sendCurrentBatch = async () => {
+    if (batch.length === 0) return;
+    const rows = batch;
+    batch = [];
+
+    for (const chunk of splitWebhookBatch(rows)) {
+      batchNumber += 1;
+      try {
+        await postWebhookBatch(settings.webhook_url as string, chunk, batchNumber);
+        job.webhookExport!.batchesSent += 1;
+        job.webhookExport!.rowsSent += chunk.length;
+        const event: RunEvent = {
+          step: "webhook_export",
+          batch: batchNumber,
+          rows: chunk.length,
+          rowsSent: job.webhookExport!.rowsSent,
+          status: "sent",
+        };
+        job.events.push(event);
+        job.latestEvent = event;
+        await persistJob(job);
+      } catch (error) {
+        job.webhookExport!.batchesFailed += 1;
+        const message = error instanceof Error ? error.message : `Webhook batch ${batchNumber} failed.`;
+        const event: RunEvent = {
+          step: "webhook_export",
+          batch: batchNumber,
+          rows: chunk.length,
+          status: "failed",
+          error: message,
+        };
+        job.events.push(event);
+        job.latestEvent = event;
+        await persistJob(job);
+        throw error;
+      }
+    }
+  };
+
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(outputPath).pipe(csv());
+    stream
+      .on("data", (row: Record<string, string>) => {
+        stream.pause();
+        rowsRead += 1;
+        batch.push(row);
+        const shouldFlush = batch.length >= batchSize;
+        (shouldFlush ? sendCurrentBatch() : Promise.resolve())
+          .then(() => stream.resume())
+          .catch(reject);
+      })
+      .on("error", reject)
+      .on("end", () => {
+        sendCurrentBatch().then(resolve).catch(reject);
+      });
+  });
+
+  job.webhookExport.status = "complete";
+  job.webhookExport.completedAt = new Date().toISOString();
+  const event: RunEvent = {
+    step: "webhook_export",
+    progress: 100,
+    status: "complete",
+    rowsSent: job.webhookExport.rowsSent,
+    batchesSent: job.webhookExport.batchesSent,
+    rowsRead,
+  };
+  job.events.push(event);
+  job.latestEvent = event;
+  await persistJob(job);
+}
+
+function queueWebhookExport(job: TransformJob, uploadId: string) {
+  void (async () => {
+    try {
+      const settings = await backendJson<WebhookSettings>("/settings/");
+      if (!settings.webhook_enabled) return;
+      await exportCsvToWebhook(job, uploadId, settings);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Webhook export failed.";
+      job.webhookExport = {
+        ...(job.webhookExport || {
+          status: "running",
+          batchesSent: 0,
+          batchesFailed: 0,
+          rowsSent: 0,
+          startedAt: new Date().toISOString(),
+        }),
+        status: "failed",
+        error: message,
+        completedAt: new Date().toISOString(),
+      };
+      const event: RunEvent = { step: "webhook_export", status: "failed", error: message };
+      job.events.push(event);
+      job.latestEvent = event;
+      await persistJob(job);
+    }
+  })();
 }
 
 function publicJob(job: TransformJob) {
@@ -250,6 +485,7 @@ export function startTransformJob(config: TransformConfig, autoImport?: AutoImpo
       }
       job.status = "complete";
       await persistJob(job);
+      queueWebhookExport(job, config.uploadId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Transform failed.";
       const errorEvent: RunEvent = { step: "error", error: message };

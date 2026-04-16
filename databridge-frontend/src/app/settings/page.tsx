@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { getBases, getSettings, saveSettings, testNocoDBConnection } from "@/lib/api";
-import { CheckCircle2, Database, Lock, RefreshCw, Save, Server, TriangleAlert, Zap } from "lucide-react";
+import { CheckCircle2, Database, Link2, Lock, RefreshCw, Save, Send, Server, TriangleAlert, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -18,6 +18,9 @@ export default function SettingsPage() {
   const [token, setToken] = useState("");
   const [baseId, setBaseId] = useState("");
   const [bases, setBases] = useState<Array<{ id: string; title: string }>>([]);
+  const [webhookEnabled, setWebhookEnabled] = useState(false);
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookBatchSize, setWebhookBatchSize] = useState(500);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -54,6 +57,9 @@ export default function SettingsPage() {
         setUrl(data.nocodb_url || "");
         setToken(data.nocodb_api_token || "");
         setBaseId(data.base_id || "");
+        setWebhookEnabled(Boolean(data.webhook_enabled));
+        setWebhookUrl(data.webhook_url || "");
+        setWebhookBatchSize(Number(data.webhook_batch_size || 500));
       })
       .catch(() => toast.error("Failed to load settings."))
       .finally(() => setLoading(false));
@@ -69,7 +75,16 @@ export default function SettingsPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await saveSettings({ nocodb_url: url, nocodb_api_token: token, base_id: baseId || null, default_concurrency: 5, table_presets: [] });
+      await saveSettings({
+        nocodb_url: url,
+        nocodb_api_token: token,
+        base_id: baseId || null,
+        webhook_enabled: webhookEnabled,
+        webhook_url: webhookUrl || null,
+        webhook_batch_size: webhookBatchSize,
+        default_concurrency: 5,
+        table_presets: [],
+      });
       toast.success("Settings saved.");
       loadHealth();
     } catch (err) {
@@ -186,6 +201,67 @@ export default function SettingsPage() {
           </Button>
         </div>
       </div>
+
+      <section className="bg-card rounded-2xl border shadow-sm overflow-hidden backdrop-blur-xl">
+        <div className="border-b p-6">
+          <h2 className="flex items-center gap-2 text-xl font-semibold">
+            <Send className="h-5 w-5 text-primary" />
+            Webhook Export
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Send final transformed CSV rows as JSON batches after generation completes.
+          </p>
+        </div>
+        <div className="space-y-5 p-6">
+          <label className="flex items-center justify-between gap-4 rounded-xl border bg-muted/20 p-4">
+            <span>
+              <span className="block text-sm font-semibold">Send to Webhook</span>
+              <span className="mt-1 block text-xs text-muted-foreground">Runs in the background and does not block CSV generation.</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={webhookEnabled}
+              onChange={(event) => setWebhookEnabled(event.target.checked)}
+              className="h-5 w-5 accent-primary"
+            />
+          </label>
+
+          <div>
+            <label className="text-sm font-medium mb-1 block">Webhook URL</label>
+            <div className="relative">
+              <Link2 className="w-5 h-5 absolute left-3 top-3 text-muted-foreground" />
+              <input
+                type="url"
+                value={webhookUrl}
+                onChange={(event) => setWebhookUrl(event.target.value)}
+                placeholder="https://example.com/webhooks/databridge"
+                className="w-full bg-background border rounded-lg pl-10 pr-4 py-2.5 focus:ring-2 focus:ring-primary outline-none transition-all"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium mb-1 block">Batch Size</label>
+            <input
+              type="number"
+              min={1}
+              max={2000}
+              value={webhookBatchSize}
+              onChange={(event) => setWebhookBatchSize(Math.max(1, Math.min(Number(event.target.value || 500), 2000)))}
+              className="w-full bg-background border rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-primary outline-none transition-all"
+            />
+            <p className="text-xs text-muted-foreground mt-2">
+              Recommended: 500 to 2,000 rows. Large batches are automatically split if the request body is too large.
+            </p>
+          </div>
+
+          <div className="flex justify-end border-t pt-5">
+            <Button onClick={handleSave} disabled={saving}>
+              {saving ? "Saving..." : <><Save className="w-4 h-4 mr-2" /> Save Webhook Settings</>}
+            </Button>
+          </div>
+        </div>
+      </section>
 
       <section className="bg-card rounded-2xl border shadow-sm overflow-hidden backdrop-blur-xl">
         <div className="border-b p-6">
