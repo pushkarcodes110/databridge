@@ -135,6 +135,48 @@ type MailboxValidationResult = {
   status: string;
 };
 
+async function readJsonResponse<T>(response: Response, label: string): Promise<T> {
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") || "";
+  let data: unknown = null;
+
+  if (text) {
+    if (contentType.includes("application/json") || /^[\[{]/.test(text.trim())) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`${label} returned invalid JSON: ${text.slice(0, 160)}`);
+      }
+    } else if (!response.ok) {
+      throw new Error(`${label} failed (${response.status}): ${text.slice(0, 160)}`);
+    }
+  }
+
+  if (!response.ok) {
+    const detail = data && typeof data === "object" && "error" in data ? String((data as { error?: unknown }).error) : null;
+    throw new Error(detail || `${label} failed (${response.status})`);
+  }
+
+  return data as T;
+}
+
+async function fetchJsonWithTimeout<T>(url: string, init: RequestInit, timeoutMs: number, label: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return await readJsonResponse<T>(response, label);
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`${label} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function csvEscape(value: unknown) {
   const text = String(value ?? "");
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
@@ -473,35 +515,48 @@ async function mapWithConcurrency<T, R>(
 }
 
 async function validateMailboxWithRapid(emails: string[]): Promise<MailboxValidationResult[]> {
-  const response = await fetch(`${rapidEmailValidatorUrl}/api/validate/batch`, {
+  type RapidResponseItem = { email?: unknown; status?: unknown; error?: unknown };
+  type RapidResponse = RapidResponseItem[] | {
+    results?: RapidResponseItem[];
+    items?: RapidResponseItem[];
+    data?: RapidResponseItem[];
+  };
+
+  const data = await fetchJsonWithTimeout<RapidResponse>(`${rapidEmailValidatorUrl}/api/validate/batch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ emails }),
-  });
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(data?.error || `Rapid Email Validator failed: ${response.status}`);
-  }
+    body: JSON.stringify({ emails, timeout: 5000 }),
+  }, 8000, "Rapid Email Validator");
 
-  const results = Array.isArray(data?.results) ? data.results : [];
-  return emails.map((_email, index) => {
-    const item = results[index] && typeof results[index] === "object" ? results[index] as Record<string, unknown> : undefined;
+  const results = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.results)
+      ? data.results
+      : Array.isArray(data?.items)
+        ? data.items
+        : Array.isArray(data?.data)
+          ? data.data
+          : [];
+  const resultsByEmail = new Map<string, RapidResponseItem>();
+  results.forEach((item) => {
+    const email = typeof item?.email === "string" ? item.email.trim().toLowerCase() : "";
+    if (email) resultsByEmail.set(email, item);
+  });
+
+  return emails.map((email, index) => {
+    const item = resultsByEmail.get(email.trim().toLowerCase()) || results[index];
     return { status: normalizeMailboxStatus(typeof item?.status === "string" ? item.status : undefined) };
   });
 }
 
 async function validateMailboxWithReacher(emails: string[]): Promise<MailboxValidationResult[]> {
   return mapWithConcurrency(emails, reacherConcurrency, async (email) => {
-    const response = await fetch(`${reacherUrl}${reacherCheckPath}`, {
+    const data = await fetchJsonWithTimeout<Record<string, unknown>>(`${reacherUrl}${reacherCheckPath}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ to_email: email }),
-    });
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error(data?.error || `Reacher failed: ${response.status}`);
-    }
-    return { status: statusFromReacher(data && typeof data === "object" ? data as Record<string, unknown> : undefined) };
+    }, 8000, "Reacher");
+    return { status: statusFromReacher(data && typeof data === "object" ? data : undefined) };
   });
 }
 
@@ -515,9 +570,16 @@ async function validateMailboxBatch(emails: string[], provider: MailboxValidatio
 
   if (pending.length === 0) return results;
 
-  const providerResults = provider === "reacher"
-    ? await validateMailboxWithReacher(pending.map((item) => item.email))
-    : await validateMailboxWithRapid(pending.map((item) => item.email));
+  let providerResults: MailboxValidationResult[];
+  try {
+    providerResults = provider === "reacher"
+      ? await validateMailboxWithReacher(pending.map((item) => item.email))
+      : await validateMailboxWithRapid(pending.map((item) => item.email));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    const status = message.toLowerCase().includes("timed out") ? "VALIDATION_TIMEOUT" : "VALIDATION_FAILED";
+    providerResults = pending.map(() => ({ status }));
+  }
 
   pending.forEach((item, index) => {
     results[item.index] = providerResults[index] ?? { status: "UNKNOWN" };
@@ -609,15 +671,17 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
 
   const emailColumn = config.filters.email.config.column;
   const provider = config.filters.email.config.mailboxValidator || "rapid";
-  const validColumn = headers.includes("valid") ? "email_valid" : "valid";
-  const outputHeaders = headers.includes(validColumn) ? headers : [...headers, validColumn];
+  const statusColumn = "status";
+  const outputHeaders = headers.includes(statusColumn) ? headers : [...headers, statusColumn];
   let rowsProcessed = 0;
+  let validationIssues = 0;
+  let lastValidationIssueWarning = 0;
 
   emit({
     step: "email_enrichment",
     progress: 0,
     provider,
-    column: validColumn,
+    column: statusColumn,
     batchSize: EMAIL_BATCH_SIZE,
   });
 
@@ -630,9 +694,17 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
         throw new Error("Email validator returned an incomplete result set.");
       }
 
+      validationIssues += validation.filter((item) => (
+        item.status === "VALIDATION_TIMEOUT" || item.status === "VALIDATION_FAILED"
+      )).length;
+      const warning = validationIssues > lastValidationIssueWarning
+        ? `${validationIssues} email validations could not be completed yet.`
+        : undefined;
+      if (warning) lastValidationIssueWarning = validationIssues;
+
       rows.forEach((row, index) => {
         rowsProcessed += 1;
-        row[validColumn] = normalizeMailboxStatus(validation[index]?.status);
+        row[statusColumn] = normalizeMailboxStatus(validation[index]?.status);
       });
 
       emit({
@@ -640,7 +712,8 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
         progress: Math.round((rowsProcessed / Math.max(totalRows, 1)) * 100),
         rowsProcessed,
         provider,
-        column: validColumn,
+        column: statusColumn,
+        warning,
       });
 
       return rows;
@@ -654,7 +727,7 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
     progress: 100,
     rowsProcessed,
     provider,
-    column: validColumn,
+    column: statusColumn,
   });
 
   return outputHeaders;

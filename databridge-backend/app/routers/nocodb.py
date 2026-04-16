@@ -9,6 +9,31 @@ import re
 
 router = APIRouter(prefix="/api/nocodb", tags=["NocoDB"])
 
+def parse_response_json(response: httpx.Response):
+    content_type = response.headers.get("content-type", "")
+    text = response.text
+    if "application/json" not in content_type and text and not text.lstrip().startswith(("{", "[")):
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 502,
+            detail=f"NocoDB returned non-JSON response ({response.status_code}): {text[:180]}",
+        )
+    try:
+        return response.json()
+    except ValueError:
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 502,
+            detail=f"NocoDB returned invalid JSON ({response.status_code}): {text[:180]}",
+        )
+
+def raise_for_noco_status(response: httpx.Response):
+    if response.status_code < 400:
+        return
+    try:
+        detail = parse_response_json(response)
+    except HTTPException as exc:
+        detail = exc.detail
+    raise HTTPException(status_code=response.status_code, detail=detail)
+
 async def get_nocodb_client(db: Session = Depends(get_db)):
     settings = db.query(SettingsModel).first()
     if not settings or not settings.nocodb_url or not settings.nocodb_api_token:
@@ -29,12 +54,12 @@ async def list_bases(client_info: tuple = Depends(get_nocodb_client)):
         if ws_res.status_code in (404, 401, 403):
             endpoint = f"{url}/api/v1/db/meta/projects"
             res = await client.get(endpoint, headers=headers)
-            res.raise_for_status()
-            data = res.json()
+            raise_for_noco_status(res)
+            data = parse_response_json(res)
             return data.get("list", data) if isinstance(data, dict) else data
             
-        ws_res.raise_for_status()
-        ws_data = ws_res.json()
+        raise_for_noco_status(ws_res)
+        ws_data = parse_response_json(ws_res)
         workspaces = ws_data.get("list", ws_data) if isinstance(ws_data, dict) else ws_data
         
         all_bases = []
@@ -45,7 +70,7 @@ async def list_bases(client_info: tuple = Depends(get_nocodb_client)):
                     base_end = f"{url}/api/v1/workspaces/{ws_id}/bases"
                     base_res = await client.get(base_end, headers=headers)
                     if base_res.status_code == 200:
-                        b_data = base_res.json()
+                        b_data = parse_response_json(base_res)
                         bases = b_data.get("list", b_data) if isinstance(b_data, dict) else b_data
                         if isinstance(bases, list):
                             all_bases.extend(bases)
@@ -57,8 +82,8 @@ async def list_tables(base_id: str, client_info: tuple = Depends(get_nocodb_clie
     endpoint = f"{url}/api/v1/db/meta/projects/{base_id}/tables"
     async with httpx.AsyncClient() as client:
         res = await client.get(endpoint, headers=headers)
-        res.raise_for_status()
-        data = res.json()
+        raise_for_noco_status(res)
+        data = parse_response_json(res)
         return data.get("list", data) if isinstance(data, dict) else data
 
 @router.get("/fields/{table_id}")
@@ -163,7 +188,7 @@ async def create_table(base_id: str, data: CreateTableSchema, client_info: tuple
             }
             retry_res = await client.post(endpoint, headers=headers, json=title_only_payload)
             if retry_res.status_code < 400:
-                return retry_res.json()
+                return parse_response_json(retry_res)
             res = retry_res
         
         if res.status_code == 404:
@@ -173,4 +198,4 @@ async def create_table(base_id: str, data: CreateTableSchema, client_info: tuple
         if res.status_code >= 400:
             raise HTTPException(status_code=res.status_code, detail=noco_error_detail(res))
 
-        return res.json()
+        return parse_response_json(res)

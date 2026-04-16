@@ -8,5 +8,6 @@ class Settings(Base):
     id = Column(String, primary_key=True, default="default")
     nocodb_url = Column(String, nullable=True)
     nocodb_api_token = Column(String, nullable=True) # Will be encrypted
+    base_id = Column(String, nullable=True)
     default_concurrency = Column(Integer, default=5)
     table_presets = Column(JSON, default=[]) # array of {name, base_id, table_id}

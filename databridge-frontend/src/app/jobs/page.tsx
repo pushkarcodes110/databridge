@@ -63,7 +63,12 @@ type TransformJobApi = {
 
 function formatDate(value: string | null) {
   if (!value) return "—";
-  return new Date(value).toLocaleString();
+  return `${new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    dateStyle: "medium",
+    timeStyle: "medium",
+    hour12: true,
+  }).format(new Date(value))} IST`;
 }
 
 function formatStatus(status: string) {
@@ -79,6 +84,47 @@ function statusIcon(status: string) {
 
 function isActiveStatus(status: string) {
   return status === "pending" || status === "running" || status === "queued";
+}
+
+function formatNumber(value: unknown) {
+  return Number(value || 0).toLocaleString("en-IN");
+}
+
+function durationLabel(startedAt: string | null, completedAt: string | null) {
+  if (!startedAt || !completedAt) return "—";
+  const seconds = Math.max(0, Math.round((new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes <= 0) return `${remainder}s`;
+  return `${minutes}m ${remainder}s`;
+}
+
+function stepLabel(step: unknown) {
+  const value = String(step || "queued");
+  const labels: Record<string, string> = {
+    queued: "Queued",
+    starting: "Starting",
+    mapping: "Mapping columns",
+    deduplication: "Removing duplicates",
+    email: "Cleaning emails",
+    email_enrichment: "Validating emails",
+    gender: "Filtering gender",
+    write: "Writing output",
+    noco_import: "Starting NocoDB import",
+    complete: "Pipeline complete",
+    error: "Needs attention",
+  };
+  return labels[value] || value.replace(/_/g, " ");
+}
+
+function transformStats(job: JobDetail) {
+  const completeEvent = job.events?.findLast((event) => event.step === "complete");
+  const stats = (job.latestEvent?.stats || completeEvent?.stats) as Record<string, unknown> | undefined;
+  return {
+    inputRows: Number(stats?.inputRows ?? job.total ?? 0),
+    outputRows: Number(stats?.outputRows ?? 0),
+    rowsRemoved: Number(stats?.rowsRemoved ?? 0),
+  };
 }
 
 function transformInputRows(job: TransformJobApi) {
@@ -350,18 +396,22 @@ export default function JobsPage() {
               </div>
 
               {selectedJob.kind === "transform" ? (
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className="grid gap-4 md:grid-cols-4">
                   <div className="rounded-xl border bg-muted/20 p-4">
-                    <div className="text-2xl font-bold">{selectedJob.events?.length || 0}</div>
-                    <div className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">Events</div>
+                    <div className="text-2xl font-bold">{formatNumber(transformStats(selectedJob).inputRows)}</div>
+                    <div className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">Input Rows</div>
                   </div>
                   <div className="rounded-xl border bg-muted/20 p-4">
-                    <div className="text-2xl font-bold">{selectedJob.importJobId ? "Yes" : "No"}</div>
-                    <div className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">Auto Import</div>
+                    <div className="text-2xl font-bold">{formatNumber(transformStats(selectedJob).outputRows)}</div>
+                    <div className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">Rows Ready</div>
                   </div>
                   <div className="rounded-xl border bg-muted/20 p-4">
-                    <div className="text-2xl font-bold">{selectedJob.latestEvent?.step ? String(selectedJob.latestEvent.step) : "—"}</div>
-                    <div className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">Current Step</div>
+                    <div className="text-2xl font-bold">{formatNumber(transformStats(selectedJob).rowsRemoved)}</div>
+                    <div className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">Rows Removed</div>
+                  </div>
+                  <div className="rounded-xl border bg-muted/20 p-4">
+                    <div className="text-lg font-bold">{stepLabel(selectedJob.latestEvent?.step)}</div>
+                    <div className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">Pipeline Stage</div>
                   </div>
                 </div>
               ) : (
@@ -395,10 +445,24 @@ export default function JobsPage() {
                   <div className="mt-1 text-sm">{formatDate(selectedJob.started_at)}</div>
                 </div>
                 <div className="rounded-xl border p-4">
-                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Completed</div>
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Completed / Duration</div>
                   <div className="mt-1 text-sm">{formatDate(selectedJob.completed_at)}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">{durationLabel(selectedJob.started_at, selectedJob.completed_at)}</div>
                 </div>
               </div>
+
+              {selectedJob.kind === "transform" ? (
+                <div className={`rounded-xl border p-4 text-sm ${selectedJob.importError ? "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300" : "bg-muted/20"}`}>
+                  <div className="font-semibold">Auto Import</div>
+                  <div className="mt-1">
+                    {selectedJob.importError
+                      ? selectedJob.importError
+                      : selectedJob.importJobId
+                        ? `NocoDB import job started: ${selectedJob.importJobId}`
+                        : "No NocoDB import was started for this transform."}
+                  </div>
+                </div>
+              ) : null}
 
               {selectedJob.error_summary ? (
                 <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-600 dark:text-red-300">

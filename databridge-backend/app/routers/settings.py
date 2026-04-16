@@ -17,6 +17,7 @@ class TablePreset(BaseModel):
 class SettingsSchema(BaseModel):
     nocodb_url: Optional[str] = None
     nocodb_api_token: Optional[str] = None
+    base_id: Optional[str] = None
     default_concurrency: int = 5
     table_presets: List[TablePreset] = []
 
@@ -32,6 +33,7 @@ def get_settings(db: Session = Depends(get_db)):
     return {
         "nocodb_url": settings_obj.nocodb_url,
         "nocodb_api_token": "********" if settings_obj.nocodb_api_token else None,
+        "base_id": settings_obj.base_id,
         "default_concurrency": settings_obj.default_concurrency,
         "table_presets": settings_obj.table_presets
     }
@@ -46,7 +48,8 @@ def update_settings(settings_in: SettingsSchema, db: Session = Depends(get_db)):
     settings_obj.nocodb_url = settings_in.nocodb_url
     if settings_in.nocodb_api_token and settings_in.nocodb_api_token != "********":
         settings_obj.nocodb_api_token = settings_in.nocodb_api_token
-        
+
+    settings_obj.base_id = settings_in.base_id
     settings_obj.default_concurrency = settings_in.default_concurrency
     settings_obj.table_presets = [p.dict() for p in settings_in.table_presets]
     
@@ -56,6 +59,7 @@ def update_settings(settings_in: SettingsSchema, db: Session = Depends(get_db)):
     return {
         "nocodb_url": settings_obj.nocodb_url,
         "nocodb_api_token": "********" if settings_obj.nocodb_api_token else None,
+        "base_id": settings_obj.base_id,
         "default_concurrency": settings_obj.default_concurrency,
         "table_presets": settings_obj.table_presets
     }

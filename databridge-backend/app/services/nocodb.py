@@ -2,6 +2,16 @@ import httpx
 import asyncio
 from typing import List, Dict, Any, Optional
 
+def parse_json_response(response: httpx.Response) -> Any:
+    text = response.text
+    content_type = response.headers.get("content-type", "")
+    if "application/json" not in content_type and text and not text.lstrip().startswith(("{", "[")):
+        raise ValueError(f"NocoDB returned non-JSON response ({response.status_code}): {text[:180]}")
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise ValueError(f"NocoDB returned invalid JSON ({response.status_code}): {text[:180]}") from exc
+
 class NocoDBClient:
     def __init__(self, base_url: str, api_token: str, max_concurrent: int = 5):
         self.base_url = base_url.rstrip('/')
@@ -28,7 +38,7 @@ class NocoDBClient:
             url = f"{self.base_url}/api/v1/db/meta/projects/{base_id}/tables"
             response = await self.client.get(url, headers=self.headers)
             if response.status_code == 200:
-                tables = response.json().get('list', [])
+                tables = parse_json_response(response).get('list', [])
                 return any(t.get('id') == table_id or t.get('table_name') == table_id for t in tables)
         except:
             pass
@@ -48,7 +58,7 @@ class NocoDBClient:
                 url = f"{self.base_url}{ep}"
                 response = await self.client.get(url, headers=self.headers)
                 if response.status_code == 200:
-                    data = response.json()
+                    data = parse_json_response(response)
                     return data.get("list", data) if isinstance(data, dict) else data
             except:
                 continue
@@ -59,7 +69,7 @@ class NocoDBClient:
                 url = f"{self.base_url}/api/v1/db/data/noco/{base_id}/{table_id}?limit=1"
                 response = await self.client.get(url, headers=self.headers)
                 if response.status_code == 200:
-                    sample = response.json()
+                    sample = parse_json_response(response)
                     records = sample.get('list', sample) if isinstance(sample, dict) else sample
                     if records and len(records) > 0:
                         # Infer fields from keys
@@ -78,7 +88,7 @@ class NocoDBClient:
             try:
                 response = await self.client.post(url, headers=self.headers, json=field_def)
                 if response.status_code in [200, 201]:
-                    return response.json()
+                    return parse_json_response(response)
                 elif response.status_code in [400, 409]: # Likely already exists
                     return {"message": "Field already exists or invalid def"}
             except:
@@ -104,7 +114,7 @@ class NocoDBClient:
             for payload in payloads:
                 response = await self.client.post(url, headers=self.headers, json=payload)
                 if response.status_code in [200, 201]:
-                    return response.json()
+                    return parse_json_response(response)
 
                 last_error = f"Bulk insert failed: {response.status_code} - {response.text}"
 

@@ -122,9 +122,23 @@ async function backendJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
-  const data = await response.json().catch(() => null);
+  const text = await response.text();
+  let data: unknown = null;
+  if (text) {
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json") || /^[\[{]/.test(text.trim())) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`Backend returned invalid JSON (${response.status}): ${text.slice(0, 180)}`);
+      }
+    } else if (!response.ok) {
+      throw new Error(`Backend returned non-JSON error (${response.status}): ${text.slice(0, 180)}`);
+    }
+  }
+
   if (!response.ok) {
-    const detail = data?.detail || data?.error;
+    const detail = data && typeof data === "object" ? ((data as { detail?: unknown; error?: unknown }).detail || (data as { error?: unknown }).error) : null;
     const message = typeof detail === "string"
       ? detail
       : detail
@@ -145,12 +159,15 @@ async function autoImportToNoco(job: TransformJob, uploadId: string, headers: st
     throw new Error(`Transform output file is missing at ${outputPath}. Auto-import was not started.`);
   }
 
-  const bases = await backendJson<Array<{ id: string; title: string }>>("/nocodb/bases");
-  const defaultBase = bases[0];
-  if (!defaultBase?.id) throw new Error("No NocoDB base found for auto import.");
+  const [settings, bases] = await Promise.all([
+    backendJson<{ base_id?: string | null }>("/settings/"),
+    backendJson<Array<{ id: string; title: string }>>("/nocodb/bases"),
+  ]);
+  const selectedBase = bases.find((base) => base.id === settings.base_id) || bases[0];
+  if (!selectedBase?.id) throw new Error("No NocoDB base found for auto import.");
 
   const tableName = autoImportTableName(job.autoImport.tableName);
-  const createdTable = await backendJson<{ id: string }>(`/nocodb/tables/${encodeURIComponent(defaultBase.id)}`, {
+  const createdTable = await backendJson<{ id: string }>(`/nocodb/tables/${encodeURIComponent(selectedBase.id)}`, {
     method: "POST",
     body: JSON.stringify({
       table_name: tableName,
@@ -167,7 +184,7 @@ async function autoImportToNoco(job: TransformJob, uploadId: string, headers: st
       file_size: stats.outputRows,
       total_rows: stats.outputRows,
       file_format: "csv",
-      nocodb_base_id: defaultBase.id,
+      nocodb_base_id: selectedBase.id,
       nocodb_table_id: createdTable.id,
       column_mapping: columnMapping,
       options: { source: "transform-auto-import", uploadId },
@@ -180,7 +197,8 @@ async function autoImportToNoco(job: TransformJob, uploadId: string, headers: st
     progress: 100,
     importJobId: importJob.id,
       tableName,
-      baseId: defaultBase.id,
+      baseId: selectedBase.id,
+      baseTitle: selectedBase.title,
       filePath: outputPath,
   };
   job.events.push(event);

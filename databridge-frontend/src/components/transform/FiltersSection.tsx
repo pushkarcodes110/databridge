@@ -101,6 +101,13 @@ type RunEvent = {
   column?: string;
 };
 
+type TransformJobProgress = {
+  status: string;
+  events?: RunEvent[];
+  latestEvent?: RunEvent;
+  importError?: string;
+};
+
 type TransformOutputPreview = {
   columns: string[];
   rows: Record<string, string>[];
@@ -128,6 +135,31 @@ type NocoField = {
   column_name?: string;
   uidt?: string;
 };
+
+async function parseJsonResponse<T>(response: Response, label: string): Promise<T> {
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") || "";
+  let data: unknown = null;
+
+  if (text) {
+    if (contentType.includes("application/json") || /^[\[{]/.test(text.trim())) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`${label} returned invalid JSON: ${text.slice(0, 180)}`);
+      }
+    } else {
+      throw new Error(`${label} returned ${response.status}: ${text.slice(0, 180)}`);
+    }
+  }
+
+  if (!response.ok) {
+    const detail = data && typeof data === "object" ? ((data as { error?: unknown; detail?: unknown }).error || (data as { detail?: unknown }).detail) : null;
+    throw new Error(typeof detail === "string" ? detail : `${label} failed with status ${response.status}.`);
+  }
+
+  return data as T;
+}
 
 type TransformHistoryEntry = {
   date: string;
@@ -1404,18 +1436,27 @@ export function FiltersSection({ totalRows, previewRows, sourceColumns, inputFil
         }),
       });
 
-      const created = await response.json();
-      if (!response.ok) {
-        throw new Error(created?.error || "Transform pipeline failed to start.");
-      }
+      const created = await parseJsonResponse<{ id: string }>(response, "Transform pipeline");
 
       const jobId = created.id as string;
       const seenEvents = new Set<string>();
+      let transientPollFailures = 0;
 
       while (true) {
         const jobResponse = await fetch(`/api/transform/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
-        const job = await jobResponse.json();
-        if (!jobResponse.ok) throw new Error(job?.error || "Failed to read transform job progress.");
+        let job: TransformJobProgress;
+
+        try {
+          job = await parseJsonResponse<TransformJobProgress>(jobResponse, "Transform job progress");
+          transientPollFailures = 0;
+        } catch (error) {
+          transientPollFailures += 1;
+          const message = error instanceof Error ? error.message : "Failed to read transform job progress.";
+          if (transientPollFailures >= 4) throw new Error(message);
+          toast.warning("Still waiting for job progress.", { description: message });
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
+        }
 
         const events = (job.events || []) as RunEvent[];
         events.forEach((parsed, index) => {
