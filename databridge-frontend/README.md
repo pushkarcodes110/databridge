@@ -16,6 +16,23 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Environment variables
+
+The frontend uses server-side `process.env` values for API/service URLs and feature flags.
+
+- Local dev env file: `../.env.dev` (repo root; gitignored).
+- Quick way to load it for your shell session:
+
+```bash
+set -a; source ../.env.dev; set +a
+npm run dev
+```
+
+Reacher mailbox validation is feature-flagged:
+
+- `REACHER_ENABLED=true|false` (server-side transform runner + health check)
+- `NEXT_PUBLIC_REACHER_ENABLED=true|false` (controls whether the UI shows the Reacher option)
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

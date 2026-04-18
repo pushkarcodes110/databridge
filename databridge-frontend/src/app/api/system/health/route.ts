@@ -19,6 +19,15 @@ const backendApiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000
 const backendRootUrl = backendApiUrl.replace(/\/api$/, "");
 const rapidEmailValidatorUrl = (process.env.RAPID_EMAIL_VALIDATOR_URL || "http://r0s48o0gwo4g0gkggscswg80.152.53.177.111.sslip.io").replace(/\/$/, "");
 const reacherUrl = (process.env.REACHER_URL || "").replace(/\/$/, "");
+const reacherEnabled = parseBooleanEnv(process.env.REACHER_ENABLED, false);
+
+function parseBooleanEnv(value: string | undefined, fallback: boolean) {
+  if (!value) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return fallback;
+}
 
 async function timed<T>(name: string, check: () => Promise<T>, okMessage: (value: T) => string): Promise<HealthCheck> {
   const startedAt = Date.now();
@@ -110,9 +119,11 @@ export async function GET() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ emails: ["healthcheck@example.com"], timeout: 5000 }),
     }), () => "Batch validation endpoint is responding."),
-    reacherUrl
-      ? timed("Reacher", () => fetchJson(`${reacherUrl}/`, { method: "GET" }), () => "Reacher is responding.")
-      : Promise.resolve({ name: "Reacher", status: "warn" as const, message: "REACHER_URL is not configured." }),
+    reacherEnabled
+      ? (reacherUrl
+        ? timed("Reacher", () => fetchJson(`${reacherUrl}/`, { method: "GET" }), () => "Reacher is responding.")
+        : Promise.resolve({ name: "Reacher", status: "warn" as const, message: "REACHER_URL is not configured." }))
+      : Promise.resolve({ name: "Reacher", status: "warn" as const, message: "Reacher checks are disabled (REACHER_ENABLED=false)." }),
   ]);
 
   return NextResponse.json({ checks });
