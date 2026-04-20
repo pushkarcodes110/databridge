@@ -570,7 +570,9 @@ async function validateMailboxWithReacher(emails: string[]): Promise<MailboxVali
 }
 
 async function validateMailboxBatch(emails: string[], provider: MailboxValidationProvider) {
-  const resolvedProvider: MailboxValidationProvider = provider === "reacher" && !reacherEnabled ? "rapid" : provider;
+  if (provider === "reacher" && !reacherEnabled) {
+    throw new Error("Reacher is disabled. Set REACHER_ENABLED=true to use the Reacher mailbox validator.");
+  }
   const results: MailboxValidationResult[] = emails.map((email) => (
     String(email ?? "").trim() ? { status: "UNKNOWN" } : { status: "EMPTY" }
   ));
@@ -582,7 +584,7 @@ async function validateMailboxBatch(emails: string[], provider: MailboxValidatio
 
   let providerResults: MailboxValidationResult[];
   try {
-    providerResults = resolvedProvider === "reacher"
+    providerResults = provider === "reacher"
       ? await validateMailboxWithReacher(pending.map((item) => item.email))
       : await validateMailboxWithRapid(pending.map((item) => item.email));
   } catch (error) {
@@ -681,10 +683,16 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
 
   const emailColumn = config.filters.email.config.column;
   const provider = config.filters.email.config.mailboxValidator || "rapid";
-  const resolvedProvider: MailboxValidationProvider = provider === "reacher" && !reacherEnabled ? "rapid" : provider;
-  const providerWarning = provider === "reacher" && resolvedProvider !== "reacher"
-    ? "Reacher is disabled (REACHER_ENABLED=false). Falling back to Rapid Email Validator."
-    : undefined;
+  if (provider === "reacher" && !reacherEnabled) {
+    emit({
+      step: "email_enrichment",
+      progress: 0,
+      provider,
+      column: "status",
+      warning: "Reacher is disabled (REACHER_ENABLED=false). Enable it or switch mailbox validator to Rapid.",
+    });
+    throw new Error("Reacher is disabled. Set REACHER_ENABLED=true or switch mailbox validator to Rapid.");
+  }
   const statusColumn = "status";
   const outputHeaders = headers.includes(statusColumn) ? headers : [...headers, statusColumn];
   let rowsProcessed = 0;
@@ -694,17 +702,16 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
   emit({
     step: "email_enrichment",
     progress: 0,
-    provider: resolvedProvider,
+    provider,
     column: statusColumn,
     batchSize: EMAIL_BATCH_SIZE,
-    warning: providerWarning,
   });
 
   await pipeline(
     createReadStream(inputPath),
     csv(),
     makeBatchTransform(EMAIL_BATCH_SIZE, async (rows) => {
-      const validation = await validateMailboxBatch(rows.map((row) => row[emailColumn] ?? ""), resolvedProvider);
+      const validation = await validateMailboxBatch(rows.map((row) => row[emailColumn] ?? ""), provider);
       if (validation.length !== rows.length) {
         throw new Error("Email validator returned an incomplete result set.");
       }
@@ -726,9 +733,9 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
         step: "email_enrichment",
         progress: Math.round((rowsProcessed / Math.max(totalRows, 1)) * 100),
         rowsProcessed,
-        provider: resolvedProvider,
+        provider,
         column: statusColumn,
-        warning: warning || providerWarning,
+        warning,
       });
 
       return rows;
@@ -741,9 +748,8 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
     step: "email_enrichment",
     progress: 100,
     rowsProcessed,
-    provider: resolvedProvider,
+    provider,
     column: statusColumn,
-    warning: providerWarning,
   });
 
   return outputHeaders;
