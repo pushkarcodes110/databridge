@@ -78,6 +78,7 @@ const reacherUrl = (process.env.REACHER_URL || "http://reacher:8080").replace(/\
 const reacherCheckPath = process.env.REACHER_CHECK_PATH || "/v1/check_email";
 const reacherConcurrency = Math.max(1, Math.min(Number(process.env.REACHER_CONCURRENCY || "25"), 100));
 const reacherEnabled = parseBooleanEnv(process.env.REACHER_ENABLED, false);
+const reacherRequestsPerMinute = Math.max(1, Math.min(Number(process.env.REACHER_REQUESTS_PER_MINUTE || "60"), 600));
 const EMAIL_BATCH_SIZE = 50;
 const GENDER_BATCH_SIZE = 500;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -143,6 +144,24 @@ function parseBooleanEnv(value: string | undefined, fallback: boolean) {
   if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
   return fallback;
 }
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function makeRateLimiter(minIntervalMs: number) {
+  let nextAllowedAt = 0;
+  return {
+    async wait() {
+      const now = Date.now();
+      const waitMs = Math.max(0, nextAllowedAt - now);
+      nextAllowedAt = Math.max(nextAllowedAt, now) + minIntervalMs;
+      if (waitMs > 0) await sleep(waitMs);
+    },
+  };
+}
+
+const reacherRateLimiter = makeRateLimiter(Math.ceil(60_000 / reacherRequestsPerMinute));
 
 async function readJsonResponse<T>(response: Response, label: string): Promise<T> {
   const text = await response.text();
@@ -560,12 +579,28 @@ async function validateMailboxWithRapid(emails: string[]): Promise<MailboxValida
 
 async function validateMailboxWithReacher(emails: string[]): Promise<MailboxValidationResult[]> {
   return mapWithConcurrency(emails, reacherConcurrency, async (email) => {
-    const data = await fetchJsonWithTimeout<Record<string, unknown>>(`${reacherUrl}${reacherCheckPath}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to_email: email }),
-    }, 8000, "Reacher");
-    return { status: statusFromReacher(data && typeof data === "object" ? data : undefined) };
+    const url = `${reacherUrl}${reacherCheckPath}`;
+    const body = JSON.stringify({ to_email: email });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await reacherRateLimiter.wait();
+      try {
+        const data = await fetchJsonWithTimeout<Record<string, unknown>>(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        }, 8000, "Reacher");
+        return { status: statusFromReacher(data && typeof data === "object" ? data : undefined) };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        const isRateLimited = message.includes("429") || message.toLowerCase().includes("too many requests");
+        if (!isRateLimited) throw error;
+        if (attempt === 2) return { status: "VALIDATION_RATE_LIMIT" };
+        await sleep(800 * (attempt + 1));
+      }
+    }
+
+    return { status: "VALIDATION_FAILED" };
   });
 }
 
