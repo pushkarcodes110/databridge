@@ -6,6 +6,7 @@ import { Transform } from "stream";
 import { pipeline } from "stream/promises";
 import csv from "csv-parser";
 import { outputDirPath, outputFilePath, stageDirPath, uploadInputPath } from "@/lib/server/storage";
+import { createReacherRateLimiter } from "@/lib/server/reacher-rate-limiter";
 
 export type TransformMapping = {
   outputColumn: string;
@@ -79,6 +80,10 @@ const reacherCheckPath = process.env.REACHER_CHECK_PATH || "/v1/check_email";
 const reacherConcurrency = Math.max(1, Math.min(Number(process.env.REACHER_CONCURRENCY || "25"), 100));
 const reacherEnabled = parseBooleanEnv(process.env.REACHER_ENABLED, false);
 const reacherRequestsPerMinute = Math.max(1, Math.min(Number(process.env.REACHER_REQUESTS_PER_MINUTE || "60"), 600));
+const reacherRequestsPerDay = Math.max(1, Math.min(Number(process.env.REACHER_REQUESTS_PER_DAY || "10000"), 1000000));
+const reacherTimeoutMs = Math.max(5_000, Math.min(Number(process.env.REACHER_TIMEOUT_MS || "20000"), 120_000));
+const reacherMaxRetries = Math.max(1, Math.min(Number(process.env.REACHER_MAX_RETRIES || "4"), 10));
+const reacherRateLimitStateFile = process.env.REACHER_RATE_LIMIT_STATE_FILE || "/tmp/databridge-reacher-rate-limit.json";
 const EMAIL_BATCH_SIZE = 50;
 const GENDER_BATCH_SIZE = 500;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -149,19 +154,11 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function makeRateLimiter(minIntervalMs: number) {
-  let nextAllowedAt = 0;
-  return {
-    async wait() {
-      const now = Date.now();
-      const waitMs = Math.max(0, nextAllowedAt - now);
-      nextAllowedAt = Math.max(nextAllowedAt, now) + minIntervalMs;
-      if (waitMs > 0) await sleep(waitMs);
-    },
-  };
-}
-
-const reacherRateLimiter = makeRateLimiter(Math.ceil(60_000 / reacherRequestsPerMinute));
+const reacherSharedLimiter = createReacherRateLimiter({
+  requestsPerMinute: reacherRequestsPerMinute,
+  requestsPerDay: reacherRequestsPerDay,
+  stateFilePath: reacherRateLimitStateFile,
+});
 
 async function readJsonResponse<T>(response: Response, label: string): Promise<T> {
   const text = await response.text();
@@ -582,21 +579,31 @@ async function validateMailboxWithReacher(emails: string[]): Promise<MailboxVali
     const url = `${reacherUrl}${reacherCheckPath}`;
     const body = JSON.stringify({ to_email: email });
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await reacherRateLimiter.wait();
+    for (let attempt = 0; attempt < reacherMaxRetries; attempt += 1) {
+      const reservation = await reacherSharedLimiter.reserve();
+      if (!reservation.allowed) {
+        return { status: "VALIDATION_RATE_LIMIT" };
+      }
+      if (reservation.waitMs > 0) {
+        await sleep(reservation.waitMs);
+      }
+
       try {
         const data = await fetchJsonWithTimeout<Record<string, unknown>>(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body,
-        }, 8000, "Reacher");
+        }, reacherTimeoutMs, "Reacher");
         return { status: statusFromReacher(data && typeof data === "object" ? data : undefined) };
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         const isRateLimited = message.includes("429") || message.toLowerCase().includes("too many requests");
-        if (!isRateLimited) throw error;
-        if (attempt === 2) return { status: "VALIDATION_RATE_LIMIT" };
-        await sleep(800 * (attempt + 1));
+        const isTimeout = message.toLowerCase().includes("timed out");
+        if (!isRateLimited && !isTimeout) throw error;
+        if (attempt === reacherMaxRetries - 1) {
+          return { status: isRateLimited ? "VALIDATION_RATE_LIMIT" : "VALIDATION_TIMEOUT" };
+        }
+        await sleep(800 * Math.pow(2, attempt));
       }
     }
 
@@ -752,7 +759,9 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
       }
 
       validationIssues += validation.filter((item) => (
-        item.status === "VALIDATION_TIMEOUT" || item.status === "VALIDATION_FAILED"
+        item.status === "VALIDATION_TIMEOUT"
+        || item.status === "VALIDATION_FAILED"
+        || item.status === "VALIDATION_RATE_LIMIT"
       )).length;
       const warning = validationIssues > lastValidationIssueWarning
         ? `${validationIssues} email validations could not be completed yet.`
