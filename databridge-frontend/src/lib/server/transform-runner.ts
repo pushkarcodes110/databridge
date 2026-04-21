@@ -599,9 +599,10 @@ async function validateMailboxWithReacher(emails: string[]): Promise<MailboxVali
         const message = error instanceof Error ? error.message : "";
         const isRateLimited = message.includes("429") || message.toLowerCase().includes("too many requests");
         const isTimeout = message.toLowerCase().includes("timed out");
-        if (!isRateLimited && !isTimeout) throw error;
         if (attempt === reacherMaxRetries - 1) {
-          return { status: isRateLimited ? "VALIDATION_RATE_LIMIT" : "VALIDATION_TIMEOUT" };
+          if (isRateLimited) return { status: "VALIDATION_RATE_LIMIT" };
+          if (isTimeout) return { status: "VALIDATION_TIMEOUT" };
+          return { status: "VALIDATION_FAILED" };
         }
         await sleep(800 * Math.pow(2, attempt));
       }
