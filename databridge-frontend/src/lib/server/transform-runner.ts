@@ -142,6 +142,14 @@ type MailboxValidationResult = {
   status: string;
 };
 
+function countStatuses(items: MailboxValidationResult[]) {
+  return items.reduce<Record<string, number>>((acc, item) => {
+    const key = normalizeMailboxStatus(item.status);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
 function parseBooleanEnv(value: string | undefined, fallback: boolean) {
   if (!value) return fallback;
   const normalized = value.trim().toLowerCase();
@@ -741,6 +749,11 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
   let rowsProcessed = 0;
   let validationIssues = 0;
   let lastValidationIssueWarning = 0;
+  const validationIssueTotals = {
+    timeout: 0,
+    failed: 0,
+    rateLimited: 0,
+  };
 
   emit({
     step: "email_enrichment",
@@ -759,13 +772,16 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
         throw new Error("Email validator returned an incomplete result set.");
       }
 
-      validationIssues += validation.filter((item) => (
-        item.status === "VALIDATION_TIMEOUT"
-        || item.status === "VALIDATION_FAILED"
-        || item.status === "VALIDATION_RATE_LIMIT"
-      )).length;
+      const batchCounts = countStatuses(validation);
+      const timeoutCount = batchCounts.VALIDATION_TIMEOUT || 0;
+      const failedCount = batchCounts.VALIDATION_FAILED || 0;
+      const rateLimitedCount = batchCounts.VALIDATION_RATE_LIMIT || 0;
+      validationIssueTotals.timeout += timeoutCount;
+      validationIssueTotals.failed += failedCount;
+      validationIssueTotals.rateLimited += rateLimitedCount;
+      validationIssues += timeoutCount + failedCount + rateLimitedCount;
       const warning = validationIssues > lastValidationIssueWarning
-        ? `${validationIssues} email validations could not be completed yet.`
+        ? `${validationIssues} email validations could not be completed yet (timeout=${validationIssueTotals.timeout}, failed=${validationIssueTotals.failed}, rate_limited=${validationIssueTotals.rateLimited}).`
         : undefined;
       if (warning) lastValidationIssueWarning = validationIssues;
 
@@ -781,6 +797,7 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
         provider,
         column: statusColumn,
         warning,
+        validationStatusCounts: batchCounts,
       });
 
       return rows;
@@ -795,6 +812,7 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
     rowsProcessed,
     provider,
     column: statusColumn,
+    validationIssueTotals,
   });
 
   return outputHeaders;
