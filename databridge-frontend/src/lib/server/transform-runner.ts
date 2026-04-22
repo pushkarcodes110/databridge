@@ -672,9 +672,9 @@ async function validateMailboxBatch(emails: string[], provider: MailboxValidatio
       ? await validateMailboxWithReacher(pending.map((item) => item.email))
       : await validateMailboxWithRapid(pending.map((item) => item.email));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "";
+    const message = error instanceof Error ? error.message : "Mailbox validation failed.";
     const status = message.toLowerCase().includes("timed out") ? "VALIDATION_TIMEOUT" : "VALIDATION_FAILED";
-    providerResults = pending.map(() => ({ status }));
+    providerResults = pending.map(() => ({ status, error: message }));
   }
 
   pending.forEach((item, index) => {
