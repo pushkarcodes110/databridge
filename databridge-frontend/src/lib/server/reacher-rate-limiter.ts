@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { dirname } from "path";
 
 type ReacherRateLimitConfig = {
@@ -29,6 +29,7 @@ async function withFileLock<T>(stateFilePath: string, handler: () => Promise<T>)
   const lockPath = `${stateFilePath}.lock`;
   await mkdir(dirname(stateFilePath), { recursive: true });
   const maxAttempts = 100;
+  const staleLockMs = 30_000;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       await mkdir(lockPath);
@@ -37,6 +38,16 @@ async function withFileLock<T>(stateFilePath: string, handler: () => Promise<T>)
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") {
         throw error;
+      }
+      try {
+        const lockStat = await stat(lockPath);
+        if (Date.now() - lockStat.mtimeMs > staleLockMs) {
+          await rm(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch (statError) {
+        const statCode = (statError as NodeJS.ErrnoException).code;
+        if (statCode !== "ENOENT") throw statError;
       }
       await sleep(Math.min(250, 10 + attempt * 5));
       if (attempt === maxAttempts - 1) {
