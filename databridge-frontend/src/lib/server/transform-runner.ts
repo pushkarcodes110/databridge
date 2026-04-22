@@ -76,6 +76,13 @@ const serviceUrls = Array.from(new Set([
 ]));
 const rapidEmailValidatorUrl = (process.env.RAPID_EMAIL_VALIDATOR_URL || "http://r0s48o0gwo4g0gkggscswg80.152.53.177.111.sslip.io").replace(/\/$/, "");
 const reacherUrl = (process.env.REACHER_URL || "http://reacher:8080").replace(/\/$/, "");
+const reacherPort = process.env.REACHER_PORT || "8088";
+const reacherDirectIpUrl = directIpv4UrlFromSslip(reacherUrl, reacherPort);
+const reacherFallbackUrls = (process.env.REACHER_FALLBACK_URLS || "http://localhost:8088,http://host.docker.internal:8088")
+  .split(",")
+  .map((url) => url.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+const reacherUrls = Array.from(new Set([reacherUrl, reacherDirectIpUrl, ...reacherFallbackUrls].filter(Boolean)));
 const reacherCheckPath = process.env.REACHER_CHECK_PATH || "/v1/check_email";
 const reacherConcurrency = Math.max(1, Math.min(Number(process.env.REACHER_CONCURRENCY || "25"), 100));
 const reacherEnabled = parseBooleanEnv(process.env.REACHER_ENABLED, false);
@@ -140,6 +147,7 @@ type MailboxValidationProvider = "rapid" | "reacher";
 
 type MailboxValidationResult = {
   status: string;
+  error?: string;
 };
 
 function countStatuses(items: MailboxValidationResult[]) {
@@ -160,6 +168,20 @@ function parseBooleanEnv(value: string | undefined, fallback: boolean) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function directIpv4UrlFromSslip(rawUrl: string, port: string) {
+  try {
+    const url = new URL(rawUrl);
+    if (!url.hostname.endsWith(".sslip.io")) return "";
+    const match = url.hostname.match(/(?:^|\.)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.sslip\.io$/);
+    if (!match) return "";
+    const octets = match.slice(1).map(Number);
+    if (octets.some((octet) => octet < 0 || octet > 255)) return "";
+    return `http://${octets.join(".")}:${port}`;
+  } catch {
+    return "";
+  }
 }
 
 const reacherSharedLimiter = createReacherRateLimiter({
@@ -584,39 +606,50 @@ async function validateMailboxWithRapid(emails: string[]): Promise<MailboxValida
 
 async function validateMailboxWithReacher(emails: string[]): Promise<MailboxValidationResult[]> {
   return mapWithConcurrency(emails, reacherConcurrency, async (email) => {
-    const url = `${reacherUrl}${reacherCheckPath}`;
     const body = JSON.stringify({ to_email: email });
+    let lastError = "";
 
     for (let attempt = 0; attempt < reacherMaxRetries; attempt += 1) {
       const reservation = await reacherSharedLimiter.reserve();
       if (!reservation.allowed) {
-        return { status: "VALIDATION_RATE_LIMIT" };
+        return { status: "VALIDATION_RATE_LIMIT", error: "Databridge Reacher rate limit reached." };
       }
       if (reservation.waitMs > 0) {
         await sleep(reservation.waitMs);
       }
 
-      try {
-        const data = await fetchJsonWithTimeout<Record<string, unknown>>(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-        }, reacherTimeoutMs, "Reacher");
-        return { status: statusFromReacher(data && typeof data === "object" ? data : undefined) };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "";
-        const isRateLimited = message.includes("429") || message.toLowerCase().includes("too many requests");
-        const isTimeout = message.toLowerCase().includes("timed out");
-        if (attempt === reacherMaxRetries - 1) {
-          if (isRateLimited) return { status: "VALIDATION_RATE_LIMIT" };
-          if (isTimeout) return { status: "VALIDATION_TIMEOUT" };
-          return { status: "VALIDATION_FAILED" };
+      for (const baseUrl of reacherUrls) {
+        const url = `${baseUrl}${reacherCheckPath}`;
+        try {
+          const data = await fetchJsonWithTimeout<Record<string, unknown>>(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+          }, reacherTimeoutMs, "Reacher");
+          return { status: statusFromReacher(data && typeof data === "object" ? data : undefined) };
+        } catch (error) {
+          lastError = error instanceof Error ? `${url}: ${error.message}` : `${url}: request failed`;
         }
+      }
+
+      const lowerError = lastError.toLowerCase();
+      const isRateLimited = lastError.includes("429") || lowerError.includes("too many requests");
+      const isTimeout = lowerError.includes("timed out");
+      if (attempt === reacherMaxRetries - 1) {
+        if (isRateLimited) return { status: "VALIDATION_RATE_LIMIT", error: lastError };
+        if (isTimeout) return { status: "VALIDATION_TIMEOUT", error: lastError };
+        return { status: "VALIDATION_FAILED", error: lastError || "All Reacher URLs failed." };
+      }
+
+      if (isRateLimited) {
+        return { status: "VALIDATION_RATE_LIMIT", error: lastError };
+      }
+      if (!isTimeout) {
         await sleep(800 * Math.pow(2, attempt));
       }
     }
 
-    return { status: "VALIDATION_FAILED" };
+    return { status: "VALIDATION_FAILED", error: lastError || "All Reacher URLs failed." };
   });
 }
 
@@ -773,6 +806,9 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
       }
 
       const batchCounts = countStatuses(validation);
+      const firstValidationIssue = validation.find((item) => (
+        ["VALIDATION_TIMEOUT", "VALIDATION_FAILED", "VALIDATION_RATE_LIMIT"].includes(normalizeMailboxStatus(item.status)) && item.error
+      ));
       const timeoutCount = batchCounts.VALIDATION_TIMEOUT || 0;
       const failedCount = batchCounts.VALIDATION_FAILED || 0;
       const rateLimitedCount = batchCounts.VALIDATION_RATE_LIMIT || 0;
@@ -781,7 +817,7 @@ async function enrichEmailValidity(config: TransformConfig, inputPath: string, o
       validationIssueTotals.rateLimited += rateLimitedCount;
       validationIssues += timeoutCount + failedCount + rateLimitedCount;
       const warning = validationIssues > lastValidationIssueWarning
-        ? `${validationIssues} email validations could not be completed yet (timeout=${validationIssueTotals.timeout}, failed=${validationIssueTotals.failed}, rate_limited=${validationIssueTotals.rateLimited}).`
+        ? `${validationIssues} email validations could not be completed yet (timeout=${validationIssueTotals.timeout}, failed=${validationIssueTotals.failed}, rate_limited=${validationIssueTotals.rateLimited}).${firstValidationIssue?.error ? ` Last Reacher error: ${firstValidationIssue.error}` : ""}`
         : undefined;
       if (warning) lastValidationIssueWarning = validationIssues;
 

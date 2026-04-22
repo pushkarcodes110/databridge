@@ -102,7 +102,10 @@ Expected statuses are `valid`, `typo_fixed`, `invalid`, `undeliverable`, or `unk
 4. Add environment variables:
    - `EMAIL_VALIDATOR_URL=https://<api-domain>`
    - `RAPID_EMAIL_VALIDATOR_URL=http://r0s48o0gwo4g0gkggscswg80.152.53.177.111.sslip.io`
-   - `REACHER_URL=http://<reacher-host>:8080` only if using Reacher as the mailbox validator.
+   - `REACHER_ENABLED=true` and `NEXT_PUBLIC_REACHER_ENABLED=true` only if using Reacher as the mailbox validator.
+   - `REACHER_URL=http://<reacher-host>:8088` when the frontend server reaches Reacher through the host port mapping, or `http://reacher:8080` when it is on the same Docker network.
+   - Public Coolify `https://<app>.<server-ip>.sslip.io` Reacher URLs work, but prefer internal URLs when possible. Node-side DNS for `sslip.io` can be intermittent; the runner automatically tries `http://<server-ip>:${REACHER_PORT:-8088}` as a direct fallback.
+   - `REACHER_FALLBACK_URLS=http://localhost:8088,http://host.docker.internal:8088` if the same deployment may run from host or container context.
    - `GENDER_SERVICE_URL=https://<api-domain>` only if you want it separate; otherwise omit it.
 5. Deploy.
 6. Run a production transform from the Vercel URL and confirm email validation calls the Coolify API.

@@ -18,7 +18,15 @@ type HealthCheck = {
 const backendApiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
 const backendRootUrl = backendApiUrl.replace(/\/api$/, "");
 const rapidEmailValidatorUrl = (process.env.RAPID_EMAIL_VALIDATOR_URL || "http://r0s48o0gwo4g0gkggscswg80.152.53.177.111.sslip.io").replace(/\/$/, "");
-const reacherUrl = (process.env.REACHER_URL || "").replace(/\/$/, "");
+const reacherUrl = (process.env.REACHER_URL || "http://reacher:8080").replace(/\/$/, "");
+const reacherPort = process.env.REACHER_PORT || "8088";
+const reacherDirectIpUrl = directIpv4UrlFromSslip(reacherUrl, reacherPort);
+const reacherFallbackUrls = (process.env.REACHER_FALLBACK_URLS || "http://localhost:8088,http://host.docker.internal:8088")
+  .split(",")
+  .map((url) => url.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+const reacherUrls = Array.from(new Set([reacherUrl, reacherDirectIpUrl, ...reacherFallbackUrls].filter(Boolean)));
+const reacherCheckPath = process.env.REACHER_CHECK_PATH || "/v1/check_email";
 const reacherEnabled = parseBooleanEnv(process.env.REACHER_ENABLED, false);
 
 function parseBooleanEnv(value: string | undefined, fallback: boolean) {
@@ -27,6 +35,20 @@ function parseBooleanEnv(value: string | undefined, fallback: boolean) {
   if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function directIpv4UrlFromSslip(rawUrl: string, port: string) {
+  try {
+    const url = new URL(rawUrl);
+    if (!url.hostname.endsWith(".sslip.io")) return "";
+    const match = url.hostname.match(/(?:^|\.)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.sslip\.io$/);
+    if (!match) return "";
+    const octets = match.slice(1).map(Number);
+    if (octets.some((octet) => octet < 0 || octet > 255)) return "";
+    return `http://${octets.join(".")}:${port}`;
+  } catch {
+    return "";
+  }
 }
 
 async function timed<T>(name: string, check: () => Promise<T>, okMessage: (value: T) => string): Promise<HealthCheck> {
@@ -72,6 +94,21 @@ async function fetchJson(url: string, init?: RequestInit) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchFirstJson(urls: string[], init?: RequestInit) {
+  let lastError = "";
+
+  for (const url of urls) {
+    try {
+      const data = await fetchJson(url, init);
+      return { data, url };
+    } catch (error) {
+      lastError = error instanceof Error ? `${url}: ${error.message}` : `${url}: health check failed`;
+    }
+  }
+
+  throw new Error(lastError || "No reachable endpoint found.");
 }
 
 async function exists(path: string) {
@@ -120,9 +157,11 @@ export async function GET() {
       body: JSON.stringify({ emails: ["healthcheck@example.com"], timeout: 5000 }),
     }), () => "Batch validation endpoint is responding."),
     reacherEnabled
-      ? (reacherUrl
-        ? timed("Reacher", () => fetchJson(`${reacherUrl}/`, { method: "GET" }), () => "Reacher is responding.")
-        : Promise.resolve({ name: "Reacher", status: "warn" as const, message: "REACHER_URL is not configured." }))
+      ? timed("Reacher", () => fetchFirstJson(reacherUrls.map((url) => `${url}${reacherCheckPath}`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to_email: "healthcheck@example.com" }),
+      }), (value) => `Reacher check_email endpoint is responding via ${value.url}.`)
       : Promise.resolve({ name: "Reacher", status: "warn" as const, message: "Reacher checks are disabled (REACHER_ENABLED=false)." }),
   ]);
 

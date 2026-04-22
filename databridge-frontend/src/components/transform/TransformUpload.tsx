@@ -380,7 +380,7 @@ export function TransformUpload() {
         column: "email",
         removeInvalidFormat: true,
         verifyMailboxExists: true,
-        mailboxValidator: "reacher",
+        mailboxValidator: process.env.NEXT_PUBLIC_REACHER_ENABLED === "true" ? "reacher" : "rapid",
         normalizeLowercase: true,
         fixCommonTypos: true,
       });

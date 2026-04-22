@@ -32,6 +32,11 @@ Reacher mailbox validation is feature-flagged:
 
 - `REACHER_ENABLED=true|false` (server-side transform runner + health check)
 - `NEXT_PUBLIC_REACHER_ENABLED=true|false` (controls whether the UI shows the Reacher option)
+- `REACHER_URL=http://localhost:8088` when the Next.js server runs on the same host as the Coolify Reacher port mapping.
+- `REACHER_URL=http://reacher:8080` when the Next.js server runs inside the same Docker network as the `reacher` service.
+- `REACHER_URL=https://<coolify-app>.<server-ip>.sslip.io` is supported, but internal URLs above are preferred because Node-side DNS for `sslip.io` can be intermittent. When an `sslip.io` URL contains an IPv4 address, the runner also tries `http://<server-ip>:${REACHER_PORT:-8088}`.
+- `REACHER_FALLBACK_URLS=http://localhost:8088,http://host.docker.internal:8088` optional comma-separated fallbacks. The runner tries these after `REACHER_URL`.
+- `REACHER_CHECK_PATH=/v1/check_email` defaults to Reacher's email check endpoint.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
